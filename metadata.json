@@ -1,0 +1,5 @@
+{
+  "name": "Meubel Spuiterij Planner",
+  "description": "Een complete bedrijfsbeheerapplicatie voor een meubelspuiterij. Beheer opdrachten, klanten, workflow via een Kanban-bord, plan transportroutes en genereer facturen.",
+  "requestFramePermissions": []
+}
