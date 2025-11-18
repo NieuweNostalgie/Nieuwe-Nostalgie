@@ -1,9 +1,15 @@
 
+
+
+
+
+
+
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
-import { AppTab, Order, Department, FurnitureItem, Customer, UserProfile, UserRole, UserStatus, Organization, Supervisor } from './types';
+import { AppTab, Order, Department, FurnitureItem, Customer, UserProfile, UserRole, UserStatus } from './types';
 import { DEPARTMENT_ORDER, DEPARTMENT_COLORS, COMPANY_INFO } from './constants';
 import { CalendarIcon, DownloadIcon, PrintIcon, PlusIcon, TrashIcon } from './components/Icons';
-import { auth, db, signInWithEmailAndPassword, onAuthStateChanged, signOut, User, createUserWithEmailAndPassword, collection, doc, setDoc, onSnapshot, query, getDoc, updateDoc, runTransaction, addDoc, deleteDoc } from './firebase';
+import { auth, db, signInWithEmailAndPassword, onAuthStateChanged, signOut, User, createUserWithEmailAndPassword, collection, doc, setDoc, onSnapshot, query, getDoc, updateDoc, runTransaction } from './firebase';
 
 
 // Use jsPDF from window object
@@ -210,165 +216,17 @@ const InactiveAccountScreen = () => {
     );
 };
 
-// --- Add/Edit Organization Modal ---
-interface AddEditOrganizationModalProps {
-    organization: Organization | null;
-    onClose: () => void;
-    onSave: (orgData: Omit<Organization, 'id'>) => Promise<string | void>;
-}
-
-const AddEditOrganizationModal: React.FC<AddEditOrganizationModalProps> = ({ organization, onClose, onSave }) => {
-    const [name, setName] = useState('');
-    const [address, setAddress] = useState('');
-    const [phone, setPhone] = useState('');
-    const [logo, setLogo] = useState<string | null>(null);
-    const [isSaving, setIsSaving] = useState(false);
-
-    useEffect(() => {
-        if (organization) {
-            setName(organization.name);
-            setAddress(organization.address || '');
-            setPhone(organization.phone || '');
-            setLogo(organization.logo || null);
-        }
-    }, [organization]);
-
-    const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-        if (e.target.files && e.target.files[0]) {
-            const reader = new FileReader();
-            reader.onloadend = () => {
-                setLogo(reader.result as string);
-            };
-            reader.readAsDataURL(e.target.files[0]);
-        }
-    };
-
-    const handleSubmit = async (e: React.FormEvent) => {
-        e.preventDefault();
-        setIsSaving(true);
-        await onSave({ name, address, phone, logo: logo || '' });
-        setIsSaving(false);
-        onClose();
-    };
-
-    return (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50">
-            <div className="bg-white dark:bg-gray-800 p-8 rounded-lg shadow-2xl w-full max-w-2xl">
-                <h2 className="text-2xl font-bold mb-6">{organization ? 'Organisatie Bewerken' : 'Nieuwe Organisatie'}</h2>
-                <form onSubmit={handleSubmit} className="space-y-4">
-                    <input type="text" placeholder="Naam" value={name} onChange={e => setName(e.target.value)} required className="block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700"/>
-                    <input type="text" placeholder="Adres" value={address} onChange={e => setAddress(e.target.value)} className="block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700"/>
-                    <input type="tel" placeholder="Telefoon" value={phone} onChange={e => setPhone(e.target.value)} className="block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700"/>
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Logo</label>
-                        <input type="file" accept="image/*" onChange={handleImageUpload} className="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"/>
-                        {logo && <img src={logo} alt="logo preview" className="mt-4 h-24 w-auto object-contain rounded bg-gray-100 dark:bg-gray-700 p-2"/>}
-                    </div>
-
-                    <div className="flex justify-end gap-4 pt-4">
-                        <button type="button" onClick={onClose} className="px-4 py-2 text-sm font-medium rounded-md border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700">Annuleren</button>
-                        <button type="submit" disabled={isSaving} className="px-4 py-2 text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300">
-                            {isSaving ? 'Opslaan...' : 'Opslaan'}
-                        </button>
-                    </div>
-                </form>
-            </div>
-        </div>
-    );
-};
-
-// --- Organizations View ---
-interface OrganizationsViewProps {
-    organizations: Organization[];
-    onAddOrganization: (orgData: Omit<Organization, 'id'>) => Promise<string | void>;
-    onUpdateOrganization: (org: Organization) => Promise<void>;
-}
-
-const OrganizationsView: React.FC<OrganizationsViewProps> = ({ organizations, onAddOrganization, onUpdateOrganization }) => {
-    const [isAddEditModalOpen, setIsAddEditModalOpen] = useState(false);
-    const [selectedOrg, setSelectedOrg] = useState<Organization | null>(null);
-
-    const handleOpenAdd = () => {
-        setSelectedOrg(null);
-        setIsAddEditModalOpen(true);
-    };
-
-    const handleOpenEdit = (org: Organization) => {
-        setSelectedOrg(org);
-        setIsAddEditModalOpen(true);
-    };
-    
-    const handleSaveOrganization = async (orgData: Omit<Organization, 'id'>) => {
-        if (selectedOrg) { // Editing
-            await onUpdateOrganization({ ...selectedOrg, ...orgData });
-        } else { // Adding
-            await onAddOrganization(orgData);
-        }
-        setIsAddEditModalOpen(false);
-        setSelectedOrg(null);
-    };
-    
-    return (
-        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg">
-            {isAddEditModalOpen && (
-                <AddEditOrganizationModal
-                    organization={selectedOrg}
-                    onClose={() => {
-                        setIsAddEditModalOpen(false);
-                        setSelectedOrg(null);
-                    }}
-                    onSave={handleSaveOrganization}
-                />
-            )}
-           
-            <div className="flex justify-between items-center mb-6">
-                 <h2 className="text-3xl font-bold text-gray-900 dark:text-white">Organisaties</h2>
-                 <button onClick={handleOpenAdd} className="flex items-center gap-2 px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700">
-                     <PlusIcon className="w-5 h-5"/> Nieuwe Organisatie Toevoegen
-                 </button>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {organizations.map(org => (
-                    <div key={org.id} className="bg-gray-50 dark:bg-gray-700/50 p-4 border dark:border-gray-600 rounded-lg shadow-sm flex flex-col justify-between">
-                        <div className="flex-grow">
-                             {org.logo ? (
-                                <img src={org.logo} alt={`${org.name} logo`} className="h-16 w-auto object-contain mb-4 rounded"/>
-                             ) : (
-                                <div className="h-16 w-full bg-gray-200 dark:bg-gray-600 flex items-center justify-center rounded mb-4">
-                                    <span className="text-gray-400 dark:text-gray-500 text-sm">Geen logo</span>
-                                </div>
-                             )}
-                            <h3 className="text-xl font-bold text-gray-900 dark:text-white truncate">{org.name}</h3>
-                            <div className="mt-2 space-y-1 text-sm text-gray-600 dark:text-gray-400">
-                                {org.address && <p>{org.address}</p>}
-                                {org.phone && <p>{org.phone}</p>}
-                            </div>
-                        </div>
-                        <div className="mt-4 pt-4 border-t dark:border-gray-600 flex flex-col sm:flex-row gap-2">
-                             <button onClick={() => handleOpenEdit(org)} className="w-full px-3 py-2 text-sm font-medium rounded-md text-white bg-gray-600 hover:bg-gray-700">Wijzigen</button>
-                        </div>
-                    </div>
-                ))}
-                 {organizations.length === 0 && <p className="text-gray-500 dark:text-gray-400 md:col-span-2 lg:col-span-3">Er zijn nog geen organisaties toegevoegd.</p>}
-            </div>
-        </div>
-    );
-};
-
 // --- Users View ---
 interface UsersViewProps {
     users: UserProfile[];
     onUpdateUser: (uid: string, data: Partial<UserProfile>) => void;
     currentUserEmail: string;
-    organizations: Organization[];
-    supervisors: Supervisor[];
 }
 
-const UsersView: React.FC<UsersViewProps> = ({ users, onUpdateUser, currentUserEmail, organizations, supervisors }) => {
+const UsersView: React.FC<UsersViewProps> = ({ users, onUpdateUser, currentUserEmail }) => {
     return (
         <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg">
-            <h2 className="text-3xl font-bold mb-6 text-gray-900 dark:text-white">Medewerkers</h2>
+            <h2 className="text-3xl font-bold mb-6 text-gray-900 dark:text-white">Medewerkersbeheer</h2>
             <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
                     <thead className="bg-gray-50 dark:bg-gray-700">
@@ -376,15 +234,12 @@ const UsersView: React.FC<UsersViewProps> = ({ users, onUpdateUser, currentUserE
                             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">E-mail</th>
                             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Rol</th>
                             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Afdeling</th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Organisatie</th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Begeleider</th>
                             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Status</th>
                         </tr>
                     </thead>
                     <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
                         {users.map(user => {
                             const isCurrentUser = user.email === currentUserEmail;
-                            const supervisorsForOrg = supervisors.filter(s => s.organizationId === user.organizationId);
                             return (
                                 <tr key={user.uid}>
                                     <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">{user.email}</td>
@@ -410,27 +265,6 @@ const UsersView: React.FC<UsersViewProps> = ({ users, onUpdateUser, currentUserE
                                     </td>
                                     <td className="px-6 py-4 whitespace-nowrap text-sm">
                                         <select
-                                            value={user.organizationId || ''}
-                                            onChange={(e) => onUpdateUser(user.uid, { organizationId: e.target.value, supervisorId: '' })}
-                                            className="block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700"
-                                        >
-                                            <option value="">Geen</option>
-                                            {organizations.map(org => <option key={org.id} value={org.id}>{org.name}</option>)}
-                                        </select>
-                                    </td>
-                                     <td className="px-6 py-4 whitespace-nowrap text-sm">
-                                        <select
-                                            value={user.supervisorId || ''}
-                                            onChange={(e) => onUpdateUser(user.uid, { supervisorId: e.target.value })}
-                                            disabled={!user.organizationId || supervisorsForOrg.length === 0}
-                                            className="block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700 disabled:bg-gray-200 dark:disabled:bg-gray-600"
-                                        >
-                                            <option value="">Geen</option>
-                                            {supervisorsForOrg.map(sup => <option key={sup.id} value={sup.id}>{sup.name}</option>)}
-                                        </select>
-                                    </td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm">
-                                        <select
                                             value={user.status}
                                             onChange={(e) => onUpdateUser(user.uid, { status: e.target.value as UserStatus })}
                                             disabled={isCurrentUser}
@@ -450,257 +284,12 @@ const UsersView: React.FC<UsersViewProps> = ({ users, onUpdateUser, currentUserE
 };
 
 
-// --- Supervisors View ---
-interface SupervisorsViewProps {
-    supervisors: Supervisor[];
-    organizations: Organization[];
-    onAddSupervisor: (data: Omit<Supervisor, 'id'>) => Promise<void>;
-    onUpdateSupervisor: (supervisor: Supervisor) => Promise<void>;
-    onDeleteSupervisor: (id: string) => Promise<void>;
-    onAddOrganization: (orgData: Omit<Organization, 'id'>) => Promise<string | void>;
-}
-
-const SupervisorsView: React.FC<SupervisorsViewProps> = ({ supervisors, organizations, onAddSupervisor, onUpdateSupervisor, onDeleteSupervisor, onAddOrganization }) => {
-    const [isModalOpen, setIsModalOpen] = useState(false);
-    const [selectedSupervisor, setSelectedSupervisor] = useState<Supervisor | null>(null);
-
-    const handleOpenAdd = () => {
-        setSelectedSupervisor(null);
-        setIsModalOpen(true);
-    };
-
-    const handleOpenEdit = (supervisor: Supervisor) => {
-        setSelectedSupervisor(supervisor);
-        setIsModalOpen(true);
-    };
-
-    const handleSave = async (data: Omit<Supervisor, 'id'>) => {
-        if (selectedSupervisor) {
-            await onUpdateSupervisor({ ...data, id: selectedSupervisor.id });
-        } else {
-            await onAddSupervisor(data);
-        }
-        setIsModalOpen(false);
-    };
-    
-    const organizationMap = useMemo(() => 
-        organizations.reduce((acc, org) => {
-            acc[org.id] = org.name;
-            return acc;
-        }, {} as Record<string, string>), 
-    [organizations]);
-
-    return (
-        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg">
-             {isModalOpen && (
-                <AddEditSupervisorModal
-                    supervisor={selectedSupervisor}
-                    organizations={organizations}
-                    onClose={() => setIsModalOpen(false)}
-                    onSave={handleSave}
-                    onAddOrganization={onAddOrganization}
-                />
-            )}
-            <div className="flex justify-between items-center mb-6">
-                 <h2 className="text-3xl font-bold text-gray-900 dark:text-white">Begeleiders</h2>
-                 <button onClick={handleOpenAdd} className="flex items-center gap-2 px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700">
-                     <PlusIcon className="w-5 h-5"/> Nieuwe Begeleider
-                 </button>
-            </div>
-            <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-                    <thead className="bg-gray-50 dark:bg-gray-700">
-                        <tr>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Naam</th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">E-mail</th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Telefoon</th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Organisatie</th>
-                            <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Acties</th>
-                        </tr>
-                    </thead>
-                    <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-                        {supervisors.map(s => (
-                            <tr key={s.id}>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">{s.name}</td>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm">{s.email}</td>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm">{s.phone}</td>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm">{organizationMap[s.organizationId] || 'Onbekend'}</td>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm text-right space-x-2">
-                                    <button onClick={() => handleOpenEdit(s)} className="text-blue-600 hover:text-blue-900">Wijzigen</button>
-                                    <button onClick={() => onDeleteSupervisor(s.id)} className="text-red-600 hover:text-red-900">Verwijderen</button>
-                                </td>
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    );
-};
-
-// --- Add/Edit Supervisor Modal ---
-interface AddEditSupervisorModalProps {
-    supervisor: Supervisor | null;
-    organizations: Organization[];
-    onClose: () => void;
-    onSave: (data: Omit<Supervisor, 'id'>) => Promise<void>;
-    onAddOrganization: (orgData: Omit<Organization, 'id'>) => Promise<string | void>;
-}
-
-const AddEditSupervisorModal: React.FC<AddEditSupervisorModalProps> = ({ supervisor, organizations, onClose, onSave, onAddOrganization }) => {
-    const [name, setName] = useState('');
-    const [email, setEmail] = useState('');
-    const [phone, setPhone] = useState('');
-    const [organizationId, setOrganizationId] = useState('');
-    const [isSaving, setIsSaving] = useState(false);
-    const [isAddingOrg, setIsAddingOrg] = useState(false);
-
-    useEffect(() => {
-        if (supervisor) {
-            setName(supervisor.name);
-            setEmail(supervisor.email);
-            setPhone(supervisor.phone);
-            setOrganizationId(supervisor.organizationId);
-        }
-    }, [supervisor]);
-
-    const handleSaveNewOrg = async (orgData: Omit<Organization, 'id'>) => {
-        const newOrgId = await onAddOrganization(orgData);
-        if (newOrgId) {
-            setOrganizationId(newOrgId);
-        }
-        setIsAddingOrg(false);
-    };
-
-    const handleSubmit = async (e: React.FormEvent) => {
-        e.preventDefault();
-        if (!organizationId) {
-            alert("Selecteer een organisatie.");
-            return;
-        }
-        setIsSaving(true);
-        await onSave({ name, email, phone, organizationId });
-        setIsSaving(false);
-        onClose();
-    };
-
-    return (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50">
-            {isAddingOrg && (
-                <AddEditOrganizationModal 
-                    organization={null} 
-                    onClose={() => setIsAddingOrg(false)}
-                    onSave={handleSaveNewOrg}
-                />
-            )}
-            <div className="bg-white dark:bg-gray-800 p-8 rounded-lg shadow-2xl w-full max-w-2xl">
-                <h2 className="text-2xl font-bold mb-6">{supervisor ? 'Begeleider Bewerken' : 'Nieuwe Begeleider'}</h2>
-                <form onSubmit={handleSubmit} className="space-y-4">
-                    <input type="text" placeholder="Naam" value={name} onChange={e => setName(e.target.value)} required className="block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700"/>
-                    <input type="email" placeholder="E-mail" value={email} onChange={e => setEmail(e.target.value)} className="block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700"/>
-                    <input type="tel" placeholder="Telefoon" value={phone} onChange={e => setPhone(e.target.value)} className="block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700"/>
-                    
-                    <div>
-                        <label className="block text-sm font-medium">Organisatie</label>
-                        <div className="flex items-center gap-2 mt-1">
-                            <select value={organizationId} onChange={e => setOrganizationId(e.target.value)} required className="flex-grow block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700">
-                                <option value="">Selecteer een organisatie...</option>
-                                {organizations.map(org => <option key={org.id} value={org.id}>{org.name}</option>)}
-                            </select>
-                            <button type="button" onClick={() => setIsAddingOrg(true)} className="px-3 py-2 text-sm rounded-md border text-blue-600 border-blue-600 hover:bg-blue-50">Nieuw</button>
-                        </div>
-                    </div>
-
-                    <div className="flex justify-end gap-4 pt-4">
-                        <button type="button" onClick={onClose} className="px-4 py-2 text-sm font-medium rounded-md border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700">Annuleren</button>
-                        <button type="submit" disabled={isSaving} className="px-4 py-2 text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-300">
-                            {isSaving ? 'Opslaan...' : 'Opslaan'}
-                        </button>
-                    </div>
-                </form>
-            </div>
-        </div>
-    );
-};
-
-// --- User Management View ---
-interface UserManagementViewProps {
-    users: UserProfile[];
-    onUpdateUser: (uid: string, data: Partial<UserProfile>) => void;
-    currentUserEmail: string;
-    organizations: Organization[];
-    supervisors: Supervisor[];
-    onAddOrganization: (orgData: Omit<Organization, 'id'>) => Promise<string | void>;
-    onUpdateOrganization: (org: Organization) => Promise<void>;
-    onAddSupervisor: (data: Omit<Supervisor, 'id'>) => Promise<void>;
-    onUpdateSupervisor: (supervisor: Supervisor) => Promise<void>;
-    onDeleteSupervisor: (id: string) => Promise<void>;
-}
-
-const UserManagementView: React.FC<UserManagementViewProps> = (props) => {
-    const [activeSubTab, setActiveSubTab] = useState<'medewerkers' | 'organisaties' | 'begeleiders'>('medewerkers');
-
-    return (
-        <div>
-            <div className="mb-6 border-b border-gray-200 dark:border-gray-700">
-                <nav className="-mb-px flex space-x-8" aria-label="Tabs">
-                    <button
-                        onClick={() => setActiveSubTab('medewerkers')}
-                        className={`whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm ${activeSubTab === 'medewerkers' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
-                    >
-                        Medewerkers
-                    </button>
-                    <button
-                        onClick={() => setActiveSubTab('organisaties')}
-                        className={`whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm ${activeSubTab === 'organisaties' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
-                    >
-                        Organisaties
-                    </button>
-                     <button
-                        onClick={() => setActiveSubTab('begeleiders')}
-                        className={`whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm ${activeSubTab === 'begeleiders' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
-                    >
-                        Begeleiders
-                    </button>
-                </nav>
-            </div>
-            {activeSubTab === 'medewerkers' ? (
-                <UsersView 
-                    users={props.users} 
-                    onUpdateUser={props.onUpdateUser} 
-                    currentUserEmail={props.currentUserEmail}
-                    organizations={props.organizations} 
-                    supervisors={props.supervisors}
-                />
-            ) : activeSubTab === 'organisaties' ? (
-                <OrganizationsView 
-                    organizations={props.organizations}
-                    onAddOrganization={props.onAddOrganization}
-                    onUpdateOrganization={props.onUpdateOrganization}
-                />
-            ) : (
-                <SupervisorsView 
-                    supervisors={props.supervisors}
-                    organizations={props.organizations}
-                    onAddSupervisor={props.onAddSupervisor}
-                    onUpdateSupervisor={props.onUpdateSupervisor}
-                    onDeleteSupervisor={props.onDeleteSupervisor}
-                    onAddOrganization={props.onAddOrganization}
-                />
-            )}
-        </div>
-    );
-};
-
-
 // --- Main App Component ---
 const PlannerApp = ({ userProfile, allUsers, onUpdateUser }: { userProfile: UserProfile, allUsers: UserProfile[], onUpdateUser: (uid: string, data: Partial<UserProfile>) => void }) => {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loadingOrders, setLoadingOrders] = useState(true);
   const [activeTab, setActiveTab] = useState<AppTab>('dashboard');
   const [deliveryScheduleInfo, setDeliveryScheduleInfo] = useState<Order | null>(null);
-  const [organizations, setOrganizations] = useState<Organization[]>([]);
-  const [supervisors, setSupervisors] = useState<Supervisor[]>([]);
 
   useEffect(() => {
     setLoadingOrders(true);
@@ -716,31 +305,6 @@ const PlannerApp = ({ userProfile, allUsers, onUpdateUser }: { userProfile: User
 
     return () => unsubscribe();
   }, []);
-  
-  useEffect(() => {
-    const q = query(collection(db, "organisaties"));
-    const unsubscribe = onSnapshot(q, (querySnapshot) => {
-        const orgsData: Organization[] = [];
-        querySnapshot.forEach((doc) => {
-            orgsData.push({ ...doc.data(), id: doc.id } as Organization);
-        });
-        setOrganizations(orgsData.sort((a,b) => a.name.localeCompare(b.name)));
-    });
-    return () => unsubscribe();
-}, []);
-
- useEffect(() => {
-    const q = query(collection(db, "begeleiders"));
-    const unsubscribe = onSnapshot(q, (querySnapshot) => {
-        const supervisorsData: Supervisor[] = [];
-        querySnapshot.forEach((doc) => {
-            supervisorsData.push({ ...doc.data(), id: doc.id } as Supervisor);
-        });
-        setSupervisors(supervisorsData.sort((a,b) => a.name.localeCompare(b.name)));
-    });
-    return () => unsubscribe();
-}, []);
-
 
   useEffect(() => {
     if (userProfile.role === UserRole.Medewerker) {
@@ -774,57 +338,6 @@ const PlannerApp = ({ userProfile, allUsers, onUpdateUser }: { userProfile: User
         alert("Kon de opdracht niet bijwerken. Probeer het opnieuw.");
     }
   };
-  
-    const addOrganization = async (orgData: Omit<Organization, 'id'>) => {
-        try {
-            const newDocRef = await addDoc(collection(db, "organisaties"), orgData);
-            return newDocRef.id;
-        } catch (error) {
-            console.error("Error adding organization: ", error);
-            alert("Kon de organisatie niet toevoegen.");
-        }
-    };
-    
-    const updateOrganization = async (org: Organization) => {
-        try {
-            const { id, ...data } = org;
-            const orgDocRef = doc(db, "organisaties", id);
-            await setDoc(orgDocRef, data, { merge: true });
-        } catch (error) {
-            console.error("Error updating organization: ", error);
-            alert("Kon de organisatie niet bijwerken.");
-        }
-    };
-
-    const addSupervisor = async (data: Omit<Supervisor, 'id'>) => {
-        try {
-            await addDoc(collection(db, "begeleiders"), data);
-        } catch (error) {
-             console.error("Error adding supervisor: ", error);
-            alert("Kon de begeleider niet toevoegen.");
-        }
-    };
-
-    const updateSupervisor = async (supervisor: Supervisor) => {
-        try {
-            const { id, ...data } = supervisor;
-            await setDoc(doc(db, "begeleiders", id), data, { merge: true });
-        } catch (error) {
-            console.error("Error updating supervisor: ", error);
-            alert("Kon de begeleider niet bijwerken.");
-        }
-    };
-
-    const deleteSupervisor = async (id: string) => {
-        if (window.confirm("Weet u zeker dat u deze begeleider wilt verwijderen?")) {
-            try {
-                await deleteDoc(doc(db, "begeleiders", id));
-            } catch (error) {
-                console.error("Error deleting supervisor: ", error);
-                alert("Kon de begeleider niet verwijderen.");
-            }
-        }
-    };
 
   const handleScheduleAndOpenCalendar = (order: Order, date: string, time: string) => {
     if (!date || !time) return;
@@ -883,20 +396,9 @@ const PlannerApp = ({ userProfile, allUsers, onUpdateUser }: { userProfile: User
         return <TransportView orders={orders} updateOrder={updateOrder} />;
       case 'gebruikers':
         if (userProfile.role !== UserRole.Beheerder) return <p>Geen toegang</p>;
-        return <UserManagementView 
-                    users={allUsers} 
-                    onUpdateUser={onUpdateUser} 
-                    currentUserEmail={userProfile.email}
-                    organizations={organizations}
-                    supervisors={supervisors}
-                    onAddOrganization={addOrganization}
-                    onUpdateOrganization={updateOrganization}
-                    onAddSupervisor={addSupervisor}
-                    onUpdateSupervisor={updateSupervisor}
-                    onDeleteSupervisor={deleteSupervisor}
-                />;
+        return <UsersView users={allUsers} onUpdateUser={onUpdateUser} currentUserEmail={userProfile.email} />;
       case 'mijn-account':
-          return <MyAccountView userProfile={userProfile} organizations={organizations} supervisors={supervisors} />;
+          return <MyAccountView userProfile={userProfile} />;
       default:
         return <Dashboard orders={orders} onUpdateFurnitureDepartment={updateFurnitureDepartment} userProfile={userProfile} onUpdateFurniturePriority={updateFurniturePriority}/>;
     }
@@ -984,7 +486,7 @@ export default function App() {
             const unsubscribeUsers = onSnapshot(usersQuery, (snapshot) => {
                 const usersData: UserProfile[] = [];
                 snapshot.forEach(doc => usersData.push(doc.data() as UserProfile));
-                setAllUsers(usersData.sort((a, b) => (a.email ?? '').localeCompare(b.email ?? '')));
+                setAllUsers(usersData.sort((a, b) => (a.email > b.email) ? 1 : -1));
             });
             return () => unsubscribeUsers();
         } else {
@@ -1040,17 +542,7 @@ const generateGoogleCalendarUrl = (startDateTime: Date, order: Order, type: 'Oph
 };
 
 // --- My Account View ---
-const MyAccountView: React.FC<{ userProfile: UserProfile, organizations: Organization[], supervisors: Supervisor[] }> = ({ userProfile, organizations, supervisors }) => {
-    const organizationName = useMemo(() => {
-        if (!userProfile.organizationId) return 'Niet toegewezen';
-        return organizations.find(org => org.id === userProfile.organizationId)?.name || 'Onbekende Organisatie';
-    }, [userProfile, organizations]);
-
-    const supervisorName = useMemo(() => {
-        if (!userProfile.supervisorId) return 'Niet toegewezen';
-        return supervisors.find(sup => sup.id === userProfile.supervisorId)?.name || 'Onbekende Begeleider';
-    }, [userProfile, supervisors]);
-
+const MyAccountView: React.FC<{ userProfile: UserProfile }> = ({ userProfile }) => {
     return (
         <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg max-w-lg mx-auto">
             <h2 className="text-3xl font-bold mb-6 text-gray-900 dark:text-white border-b pb-4">Mijn Account</h2>
@@ -1066,14 +558,6 @@ const MyAccountView: React.FC<{ userProfile: UserProfile, organizations: Organiz
                 <div>
                     <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Afdeling</p>
                     <p className="text-lg">{userProfile.department || 'Niet toegewezen'}</p>
-                </div>
-                 <div>
-                    <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Organisatie</p>
-                    <p className="text-lg">{organizationName}</p>
-                </div>
-                 <div>
-                    <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Begeleider</p>
-                    <p className="text-lg">{supervisorName}</p>
                 </div>
                 <div>
                     <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Status</p>
@@ -1094,8 +578,7 @@ const MyAccountView: React.FC<{ userProfile: UserProfile, organizations: Organiz
 
 // --- Header Component ---
 const Header: React.FC<{ activeTab: AppTab, setActiveTab: (tab: AppTab) => void, userProfile: UserProfile }> = ({ activeTab, setActiveTab, userProfile }) => {
-  // FIX: Added explicit return type to ensure `tab.id` is inferred as `AppTab` instead of `string`.
-  const getTabs = (): { id: AppTab; name: string }[] => {
+  const getTabs = () => {
     if (userProfile.role === UserRole.Medewerker) {
         return [
             { id: 'dashboard', name: 'Dashboard' },
@@ -1159,14 +642,7 @@ const Header: React.FC<{ activeTab: AppTab, setActiveTab: (tab: AppTab) => void,
         </div>
         <div className="md:hidden">
             <select
-                // Fix: Correctly handle tab change to ensure type safety. The value from the event target is a string,
-                // and we need to ensure it's a valid AppTab before setting the state.
-                onChange={(e) => {
-                    const selectedTab = tabs.find(tab => tab.id === e.target.value);
-                    if (selectedTab) {
-                        setActiveTab(selectedTab.id);
-                    }
-                }}
+                onChange={(e) => setActiveTab(e.target.value as AppTab)}
                 value={activeTab}
                 className="w-full p-2 border rounded-md bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 mb-2"
             >
@@ -1193,7 +669,7 @@ const Dashboard: React.FC<DashboardProps> = ({ orders, onUpdateFurnitureDepartme
     const furnitureByDepartment = useMemo(() => {
         const grouped: { [key in Department]?: (FurnitureItem & { order: Order })[] } = {};
         orders.forEach(order => {
-            if (order.status === 'Actief' && order.furniture) {
+            if (order.status === 'Actief') {
                 order.furniture.forEach(item => {
                     if (!grouped[item.department]) {
                         grouped[item.department] = [];
@@ -1331,7 +807,7 @@ const KanbanColumn: React.FC<KanbanColumnProps> = ({ department, items, onUpdate
             <h3 className={`font-bold text-lg mb-4 p-2 rounded-md ${colorClasses.split(' ')[0]} ${colorClasses.split(' ')[1]}`}>
                 {department} ({items.length})
             </h3>
-            <div className="space-y-6">
+            <div className="space-y-4">
                 {canReorder && <DropZone isVisible={isDragging} onDrop={(e) => handleDrop(e, 0)} />}
                 {items.map((item, index) => (
                     <React.Fragment key={item.id}>

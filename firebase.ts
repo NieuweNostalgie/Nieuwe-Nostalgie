@@ -8,7 +8,7 @@ import {
     User,
     createUserWithEmailAndPassword
 } from "firebase/auth";
-import { getFirestore, collection, doc, setDoc, onSnapshot, query, getDoc, updateDoc, getDocs, runTransaction, addDoc, deleteDoc } from "firebase/firestore";
+import { getFirestore, collection, doc, setDoc, onSnapshot, query, getDoc, updateDoc, getDocs, runTransaction } from "firebase/firestore";
 
 
 // Your web app's Firebase configuration
@@ -42,8 +42,6 @@ export {
     getDoc,
     updateDoc,
     getDocs,
-    runTransaction,
-    addDoc,
-    deleteDoc
+    runTransaction
 };
 export type { User };
