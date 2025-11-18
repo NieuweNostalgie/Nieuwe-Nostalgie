@@ -10,12 +10,30 @@ export enum UserStatus {
     Inactive = "Inactive",
 }
 
+export interface Supervisor {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  organizationId: string;
+}
+
+export interface Organization {
+  id: string; // Firestore document ID
+  name: string;
+  address?: string;
+  phone?: string;
+  logo?: string; // base64 string
+}
+
 export interface UserProfile {
     uid: string;
     email: string;
     role: UserRole;
     status: UserStatus;
     department?: Department;
+    organizationId?: string;
+    supervisorId?: string;
     createdAt?: string;
 }
 
