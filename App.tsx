@@ -1,10 +1,4 @@
 
-
-
-
-
-
-
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { AppTab, Order, Department, FurnitureItem, Customer, UserProfile, UserRole, UserStatus } from './types';
 import { DEPARTMENT_ORDER, DEPARTMENT_COLORS, COMPANY_INFO } from './constants';
@@ -454,28 +448,35 @@ export default function App() {
 
     useEffect(() => {
         const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
-            setUser(currentUser);
-            if (currentUser) {
-                const userDocRef = doc(db, "gebruikers", currentUser.uid);
-                const docSnap = await getDoc(userDocRef);
+            try {
+                setUser(currentUser);
+                if (currentUser) {
+                    const userDocRef = doc(db, "gebruikers", currentUser.uid);
+                    const docSnap = await getDoc(userDocRef);
 
-                if (docSnap.exists()) {
-                    setUserProfile(docSnap.data() as UserProfile);
+                    if (docSnap.exists()) {
+                        setUserProfile(docSnap.data() as UserProfile);
+                    } else {
+                        const isBeheerder = currentUser.email === ADMIN_EMAIL;
+                        const newProfile: UserProfile = {
+                            uid: currentUser.uid,
+                            email: currentUser.email!,
+                            role: isBeheerder ? UserRole.Beheerder : UserRole.Medewerker,
+                            status: isBeheerder ? UserStatus.Active : UserStatus.Pending,
+                        };
+                        await setDoc(userDocRef, newProfile);
+                        setUserProfile(newProfile);
+                    }
                 } else {
-                    const isBeheerder = currentUser.email === ADMIN_EMAIL;
-                    const newProfile: UserProfile = {
-                        uid: currentUser.uid,
-                        email: currentUser.email!,
-                        role: isBeheerder ? UserRole.Beheerder : UserRole.Medewerker,
-                        status: isBeheerder ? UserStatus.Active : UserStatus.Pending,
-                    };
-                    await setDoc(userDocRef, newProfile);
-                    setUserProfile(newProfile);
+                    setUserProfile(null);
                 }
-            } else {
+            } catch (error) {
+                console.error("Fout tijdens authenticatie controle:", error);
+                setUser(null);
                 setUserProfile(null);
+            } finally {
+                setLoading(false);
             }
-            setLoading(false);
         });
         return () => unsubscribe();
     }, []);
@@ -578,7 +579,8 @@ const MyAccountView: React.FC<{ userProfile: UserProfile }> = ({ userProfile }) 
 
 // --- Header Component ---
 const Header: React.FC<{ activeTab: AppTab, setActiveTab: (tab: AppTab) => void, userProfile: UserProfile }> = ({ activeTab, setActiveTab, userProfile }) => {
-  const getTabs = () => {
+  // FIX: Added explicit return type to ensure correct type inference for tab.id
+  const getTabs = (): { id: AppTab; name: string }[] => {
     if (userProfile.role === UserRole.Medewerker) {
         return [
             { id: 'dashboard', name: 'Dashboard' },
