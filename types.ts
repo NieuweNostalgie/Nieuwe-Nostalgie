@@ -38,6 +38,7 @@ export interface FurnitureItem {
   image: string; // base64 string
   treatment: string;
   department: Department;
+  priority: number;
 }
 
 export interface Customer {

@@ -1,5 +1,10 @@
 
 
+
+
+
+
+
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
 import { AppTab, Order, Department, FurnitureItem, Customer, UserProfile, UserRole, UserStatus } from './types';
 import { DEPARTMENT_ORDER, DEPARTMENT_COLORS, COMPANY_INFO } from './constants';
@@ -364,13 +369,25 @@ const PlannerApp = ({ userProfile, allUsers, onUpdateUser }: { userProfile: User
       }
   };
 
+  const updateFurniturePriority = async (orderNumber: string, furnitureId: string, newPriority: number) => {
+    const orderToUpdate = orders.find(o => o.orderNumber === orderNumber);
+    if (!orderToUpdate) return;
+
+    const newFurniture = orderToUpdate.furniture.map(item =>
+        item.id === furnitureId ? { ...item, priority: newPriority } : item
+    );
+    
+    const updatedOrder = { ...orderToUpdate, furniture: newFurniture };
+    updateOrder(updatedOrder);
+  };
+
   const renderContent = () => {
     if (loadingOrders) {
         return <div className="text-center p-8">Opdrachten laden...</div>;
     }
     switch (activeTab) {
       case 'dashboard':
-        return <Dashboard orders={orders} onUpdateFurnitureDepartment={updateFurnitureDepartment} userProfile={userProfile} />;
+        return <Dashboard orders={orders} onUpdateFurnitureDepartment={updateFurnitureDepartment} userProfile={userProfile} onUpdateFurniturePriority={updateFurniturePriority} />;
       case 'nieuwe-opdracht':
         return <NewOrderForm addOrder={addOrder} setActiveTab={setActiveTab} />;
       case 'klanten':
@@ -383,7 +400,7 @@ const PlannerApp = ({ userProfile, allUsers, onUpdateUser }: { userProfile: User
       case 'mijn-account':
           return <MyAccountView userProfile={userProfile} />;
       default:
-        return <Dashboard orders={orders} onUpdateFurnitureDepartment={updateFurnitureDepartment} userProfile={userProfile} />;
+        return <Dashboard orders={orders} onUpdateFurnitureDepartment={updateFurnitureDepartment} userProfile={userProfile} onUpdateFurniturePriority={updateFurniturePriority}/>;
     }
   };
 
@@ -643,9 +660,12 @@ interface DashboardProps {
   orders: Order[];
   onUpdateFurnitureDepartment: (orderNumber: string, furnitureId: string, newDepartment: Department) => void;
   userProfile: UserProfile;
+  onUpdateFurniturePriority: (orderNumber: string, furnitureId: string, newPriority: number) => void;
 }
 
-const Dashboard: React.FC<DashboardProps> = ({ orders, onUpdateFurnitureDepartment, userProfile }) => {
+const Dashboard: React.FC<DashboardProps> = ({ orders, onUpdateFurnitureDepartment, userProfile, onUpdateFurniturePriority }) => {
+    const [isDragging, setIsDragging] = useState(false);
+    
     const furnitureByDepartment = useMemo(() => {
         const grouped: { [key in Department]?: (FurnitureItem & { order: Order })[] } = {};
         orders.forEach(order => {
@@ -658,6 +678,13 @@ const Dashboard: React.FC<DashboardProps> = ({ orders, onUpdateFurnitureDepartme
                 });
             }
         });
+
+        for (const department in grouped) {
+            if (grouped.hasOwnProperty(department)) {
+                grouped[department as Department]!.sort((a, b) => (a.priority || 0) - (b.priority || 0));
+            }
+        }
+
         return grouped;
     }, [orders]);
 
@@ -679,6 +706,10 @@ const Dashboard: React.FC<DashboardProps> = ({ orders, onUpdateFurnitureDepartme
                         department={department}
                         items={furnitureByDepartment[department] || []}
                         onUpdateFurnitureDepartment={onUpdateFurnitureDepartment}
+                        userProfile={userProfile}
+                        isDragging={isDragging}
+                        setIsDragging={setIsDragging}
+                        onUpdateFurniturePriority={onUpdateFurniturePriority}
                     />
                 ))}
             </div>
@@ -686,22 +717,122 @@ const Dashboard: React.FC<DashboardProps> = ({ orders, onUpdateFurnitureDepartme
     );
 };
 
+interface DropZoneProps {
+    onDrop: (e: React.DragEvent) => void;
+    isVisible: boolean;
+}
+
+const DropZone: React.FC<DropZoneProps> = ({ onDrop, isVisible }) => {
+    const [show, setShow] = useState(false);
+
+    if (!isVisible) return null;
+
+    return (
+        <div
+            onDragEnter={(e) => { e.preventDefault(); setShow(true); }}
+            onDragLeave={(e) => { e.preventDefault(); setShow(false); }}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => { e.preventDefault(); setShow(false); onDrop(e); }}
+            className={`transition-all duration-200 ease-in-out ${show ? 'h-16 my-2 rounded-lg bg-blue-200 dark:bg-blue-800 bg-opacity-50' : 'h-2'}`}
+        />
+    );
+};
+
+
 interface KanbanColumnProps {
     department: Department;
     items: (FurnitureItem & { order: Order })[];
     onUpdateFurnitureDepartment: (orderNumber: string, furnitureId: string, newDepartment: Department) => void;
+    userProfile: UserProfile;
+    isDragging: boolean;
+    setIsDragging: (isDragging: boolean) => void;
+    onUpdateFurniturePriority: (orderNumber: string, furnitureId: string, newPriority: number) => void;
 }
 
-const KanbanColumn: React.FC<KanbanColumnProps> = ({ department, items, onUpdateFurnitureDepartment }) => {
+const KanbanColumn: React.FC<KanbanColumnProps> = ({ department, items, onUpdateFurnitureDepartment, userProfile, isDragging, setIsDragging, onUpdateFurniturePriority }) => {
     const colorClasses = DEPARTMENT_COLORS[department] || 'bg-gray-200 text-gray-800';
+    const canReorder = userProfile.role === UserRole.Beheerder;
+
+    const handleDrop = (e: React.DragEvent, dropIndex: number) => {
+        const data = JSON.parse(e.dataTransfer.getData('application/json'));
+        const { furnitureId, orderNumber, sourceDepartment } = data;
+
+        if (sourceDepartment !== department) {
+            // This logic is for reordering, not for moving between departments
+            return;
+        }
+
+        const itemsInColumn = items.filter(item => item.id !== furnitureId);
+        
+        const prevItem = itemsInColumn[dropIndex - 1];
+        const nextItem = itemsInColumn[dropIndex];
+
+        const prevPriority = prevItem ? (prevItem.priority || 0) : 0;
+        
+        let newPriority;
+        if (nextItem) {
+            newPriority = (prevPriority + (nextItem.priority || 0)) / 2;
+        } else {
+            newPriority = prevPriority + 1024;
+        }
+
+        onUpdateFurniturePriority(orderNumber, furnitureId, newPriority);
+    };
+
+    const handleMove = (currentIndex: number, direction: 'up' | 'down') => {
+        const currentItem = items[currentIndex];
+        let newPriority: number;
+
+        if (direction === 'up' && currentIndex > 0) {
+            const prevItem = items[currentIndex - 1];
+            const itemBeforePrev = items[currentIndex - 2];
+            const prevPriority = prevItem.priority || 0;
+            const beforePrevPriority = itemBeforePrev ? (itemBeforePrev.priority || 0) : 0;
+            newPriority = (prevPriority + beforePrevPriority) / 2;
+        } else if (direction === 'down' && currentIndex < items.length - 1) {
+            const nextItem = items[currentIndex + 1];
+            const itemAfterNext = items[currentIndex + 2];
+            const nextPriority = nextItem.priority || 0;
+            const afterNextPriority = itemAfterNext ? (itemAfterNext.priority || 0) : (nextPriority + 2048);
+            newPriority = (nextPriority + afterNextPriority) / 2;
+        } else {
+            return; // Cannot move
+        }
+
+        onUpdateFurniturePriority(currentItem.order.orderNumber, currentItem.id, newPriority);
+    };
+
     return (
         <div className={`rounded-lg p-4 ${colorClasses.split(' ')[0]} bg-opacity-40 min-h-[200px]`}>
             <h3 className={`font-bold text-lg mb-4 p-2 rounded-md ${colorClasses.split(' ')[0]} ${colorClasses.split(' ')[1]}`}>
                 {department} ({items.length})
             </h3>
             <div className="space-y-4">
-                {items.map(item => (
-                    <KanbanCard key={item.id} item={item} onUpdateFurnitureDepartment={onUpdateFurnitureDepartment} />
+                {canReorder && <DropZone isVisible={isDragging} onDrop={(e) => handleDrop(e, 0)} />}
+                {items.map((item, index) => (
+                    <React.Fragment key={item.id}>
+                        <KanbanCard 
+                            item={item} 
+                            onUpdateFurnitureDepartment={onUpdateFurnitureDepartment} 
+                            userProfile={userProfile}
+                            isDraggable={canReorder}
+                            onDragStart={(e) => {
+                                e.dataTransfer.setData('application/json', JSON.stringify({
+                                    furnitureId: item.id,
+                                    orderNumber: item.order.orderNumber,
+                                    sourceDepartment: item.department
+                                }));
+                                e.dataTransfer.effectAllowed = 'move';
+                                setIsDragging(true);
+                            }}
+                            onDragEnd={() => setIsDragging(false)}
+                            onMoveUp={() => handleMove(index, 'up')}
+                            onMoveDown={() => handleMove(index, 'down')}
+                            isFirst={index === 0}
+                            isLast={index === items.length - 1}
+                        />
+                        {canReorder && <DropZone isVisible={isDragging} onDrop={(e) => handleDrop(e, index + 1)} />}
+                    </React.Fragment>
                 ))}
             </div>
         </div>
@@ -729,17 +860,33 @@ const getDeadlineColor = (pickupDate: string, deadline: string): string => {
 interface KanbanCardProps {
     item: FurnitureItem & { order: Order };
     onUpdateFurnitureDepartment: (orderNumber: string, furnitureId: string, newDepartment: Department) => void;
+    userProfile: UserProfile;
+    isDraggable?: boolean;
+    onDragStart?: (e: React.DragEvent) => void;
+    onDragEnd?: (e: React.DragEvent) => void;
+    onMoveUp?: () => void;
+    onMoveDown?: () => void;
+    isFirst?: boolean;
+    isLast?: boolean;
 }
 
-const KanbanCard: React.FC<KanbanCardProps> = ({ item, onUpdateFurnitureDepartment }) => {
+const KanbanCard: React.FC<KanbanCardProps> = ({ item, onUpdateFurnitureDepartment, userProfile, isDraggable, onDragStart, onDragEnd, onMoveUp, onMoveDown, isFirst, isLast }) => {
     const deadlineColor = getDeadlineColor(item.order.pickupDate, item.order.deadline);
 
     const handleDepartmentChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
         onUpdateFurnitureDepartment(item.order.orderNumber, item.id, e.target.value as Department);
     };
 
+    const canMoveTask = userProfile.role !== UserRole.Medewerker;
+    const canReorder = userProfile.role === UserRole.Beheerder;
+
     return (
-        <div className={`bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md border-l-4 ${deadlineColor}`}>
+        <div 
+            draggable={isDraggable}
+            onDragStart={onDragStart}
+            onDragEnd={onDragEnd}
+            className={`bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md border-l-4 ${deadlineColor} ${isDraggable ? 'cursor-grab' : ''}`}
+        >
             {item.image && (
                 <img src={item.image} alt={item.type} className="w-full h-32 object-cover rounded-md mb-4" />
             )}
@@ -747,18 +894,48 @@ const KanbanCard: React.FC<KanbanCardProps> = ({ item, onUpdateFurnitureDepartme
             <p className="text-sm text-gray-600 dark:text-gray-400 mt-1 italic">"{item.treatment}"</p>
             <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">Opdracht: #{item.order.orderNumber}</p>
             <p className="text-sm text-gray-500 dark:text-gray-400">Klant: {item.order.customer.name} {item.order.customer.customerNumber && `(#${item.order.customer.customerNumber})`}</p>
-            <div className="mt-4">
-                <label htmlFor={`dept-${item.id}`} className="block text-sm font-medium text-gray-700 dark:text-gray-300">Verplaats naar:</label>
-                <select
-                    id={`dept-${item.id}`}
-                    value={item.department}
-                    onChange={handleDepartmentChange}
-                    className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 dark:border-gray-600 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md bg-white dark:bg-gray-700"
-                >
-                    {DEPARTMENT_ORDER.map(dept => (
-                        <option key={dept} value={dept}>{dept}</option>
-                    ))}
-                </select>
+            
+            <div className="mt-4 flex justify-between items-end">
+                <div>
+                    <label htmlFor={`dept-${item.id}`} className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                        {canMoveTask ? 'Verplaats naar:' : 'Huidige afdeling:'}
+                    </label>
+                    <select
+                        id={`dept-${item.id}`}
+                        value={item.department}
+                        onChange={handleDepartmentChange}
+                        disabled={!canMoveTask}
+                        className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 dark:border-gray-600 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md bg-white dark:bg-gray-700 disabled:bg-gray-200 dark:disabled:bg-gray-600 disabled:text-gray-500"
+                    >
+                        {DEPARTMENT_ORDER.map(dept => (
+                            <option key={dept} value={dept}>{dept}</option>
+                        ))}
+                    </select>
+                </div>
+                {canReorder && (
+                    <div className="flex items-center space-x-1">
+                        <button
+                            onClick={onMoveUp}
+                            disabled={isFirst}
+                            aria-label="Verplaats omhoog"
+                            className="p-2 rounded-full text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
+                            </svg>
+                        </button>
+                        <button
+                            onClick={onMoveDown}
+                            disabled={isLast}
+                            aria-label="Verplaats omlaag"
+                            className="p-2 rounded-full text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                            </svg>
+                        </button>
+                    </div>
+                )}
             </div>
         </div>
     );
@@ -776,7 +953,7 @@ const NewOrderForm: React.FC<NewOrderFormProps> = ({ addOrder, setActiveTab }) =
     const [pickupDate, setPickupDate] = useState('');
     const [pickupTime, setPickupTime] = useState('');
     const [deliveryCost, setDeliveryCost] = useState(0);
-    const [furniture, setFurniture] = useState<Omit<FurnitureItem, 'id' | 'department'>[]>([{ type: '', price: 0, image: '', treatment: '' }]);
+    const [furniture, setFurniture] = useState<Omit<FurnitureItem, 'id' | 'department' | 'priority'>[]>([{ type: '', price: 0, image: '', treatment: '' }]);
 
     const handleAddFurniture = () => {
         setFurniture([...furniture, { type: '', price: 0, image: '', treatment: '' }]);
@@ -786,7 +963,7 @@ const NewOrderForm: React.FC<NewOrderFormProps> = ({ addOrder, setActiveTab }) =
         setFurniture(furniture.filter((_, i) => i !== index));
     };
 
-    const handleFurnitureChange = (index: number, field: keyof Omit<FurnitureItem, 'id' | 'department'>, value: string | number) => {
+    const handleFurnitureChange = (index: number, field: keyof Omit<FurnitureItem, 'id' | 'department' | 'priority'>, value: string | number) => {
         const newFurniture = [...furniture];
         (newFurniture[index] as any)[field] = value;
         setFurniture(newFurniture);
@@ -844,10 +1021,11 @@ const NewOrderForm: React.FC<NewOrderFormProps> = ({ addOrder, setActiveTab }) =
             pickupDate: fullPickupDate.toISOString(),
             deadline: deadline.toISOString(),
             deliveryCost,
-            furniture: furniture.map(f => ({
+            furniture: furniture.map((f, index) => ({
                 ...f,
                 id: `${newOrderNumberStr}-${Math.random().toString(36).substr(2, 9)}`,
                 department: Department.Ophalen,
+                priority: (index + 1) * 1024,
             })),
             status: 'Actief',
         };
@@ -1181,12 +1359,12 @@ const TransportKanbanView: React.FC<{orders: Order[], onSelectDate: (date: strin
     return (
         <div>
             <h2 className="text-2xl font-bold mb-4">Transport Dagen</h2>
-            <div className="flex overflow-x-auto space-x-4 pb-4">
+            <div className="flex flex-col space-y-4">
                 {transportDays.map(({ date, pickups, deliveries }) => (
                     <div 
                         key={date} 
                         onClick={() => onSelectDate(date)}
-                        className="flex-shrink-0 w-64 bg-white dark:bg-gray-800 rounded-lg shadow-md p-4 cursor-pointer hover:shadow-xl transition-shadow"
+                        className="w-full bg-white dark:bg-gray-800 rounded-lg shadow-md p-4 cursor-pointer hover:shadow-xl transition-shadow"
                     >
                         <h3 className="font-bold text-lg text-gray-900 dark:text-white">
                             {new Date(date).toLocaleDateString('nl-NL', { weekday: 'long', day: 'numeric', month: 'long' })}
