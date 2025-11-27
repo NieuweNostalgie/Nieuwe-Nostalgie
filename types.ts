@@ -11,22 +11,6 @@ export enum UserStatus {
     Inactive = "Inactive",
 }
 
-export interface Organization {
-  id: string;
-  name: string;
-  address?: string;
-  phone?: string;
-  logo?: string; // base64 string
-}
-
-export interface Supervisor {
-  id: string;
-  name: string;
-  email: string;
-  phone: string;
-  organizationId: string;
-}
-
 export interface UserProfile {
     uid: string;
     email: string;
@@ -36,8 +20,6 @@ export interface UserProfile {
     role: UserRole;
     status: UserStatus;
     department?: Department;
-    organizationId?: string;
-    supervisorId?: string;
     createdAt?: string;
 }
 
@@ -83,4 +65,4 @@ export interface Order {
   status: 'Actief' | 'Voltooid';
 }
 
-export type AppTab = 'dashboard' | 'nieuwe-opdracht' | 'klanten' | 'vervoer' | 'gebruikers' | 'organisaties' | 'begeleiders' | 'mijn-account';
+export type AppTab = 'dashboard' | 'nieuwe-opdracht' | 'klanten' | 'vervoer' | 'gebruikers' | 'mijn-account';

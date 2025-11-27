@@ -1,8 +1,8 @@
 
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
-import { AppTab, Order, Department, FurnitureItem, Customer, UserProfile, UserRole, UserStatus, Organization, Supervisor } from './types';
+import { AppTab, Order, Department, FurnitureItem, Customer, UserProfile, UserRole, UserStatus } from './types';
 import { DEPARTMENT_ORDER, DEPARTMENT_COLORS, COMPANY_INFO } from './constants';
-import { CalendarIcon, DownloadIcon, PrintIcon, PlusIcon, TrashIcon, MenuIcon, XMarkIcon } from './components/Icons';
+import { CalendarIcon, DownloadIcon, PrintIcon, PlusIcon, TrashIcon, MenuIcon, XMarkIcon, MagnifyingGlassIcon } from './components/Icons';
 import { auth, db, signInWithEmailAndPassword, onAuthStateChanged, signOut, User, createUserWithEmailAndPassword, collection, doc, setDoc, onSnapshot, query, getDoc, updateDoc, runTransaction, deleteDoc, firebaseConfig, initializeApp, deleteApp, getAuth, addDoc } from './firebase';
 
 
@@ -233,7 +233,9 @@ const AddUserModal: React.FC<AddUserModalProps> = ({ onClose, onUserAdded }) => 
         let secondaryApp: any = null;
         
         try {
-            secondaryApp = initializeApp(firebaseConfig, "Secondary");
+            // Use a unique name to avoid "App named 'Secondary' already exists" error
+            const appName = `Secondary-${Date.now()}`;
+            secondaryApp = initializeApp(firebaseConfig, appName);
             const secondaryAuth = getAuth(secondaryApp);
             
             const userCredential = await createUserWithEmailAndPassword(secondaryAuth, email, password);
@@ -244,7 +246,7 @@ const AddUserModal: React.FC<AddUserModalProps> = ({ onClose, onUserAdded }) => 
                 email: user.email,
                 role: role,
                 status: UserStatus.Active,
-                department: department || undefined,
+                department: department || null,
                 createdAt: new Date().toISOString()
             });
 
@@ -263,7 +265,11 @@ const AddUserModal: React.FC<AddUserModalProps> = ({ onClose, onUserAdded }) => 
             }
         } finally {
             if (secondaryApp) {
-                await deleteApp(secondaryApp);
+                try {
+                    await deleteApp(secondaryApp);
+                } catch (e) {
+                    console.error("Error deleting secondary app", e);
+                }
             }
             setLoading(false);
         }
@@ -313,27 +319,17 @@ const AddUserModal: React.FC<AddUserModalProps> = ({ onClose, onUserAdded }) => 
 // --- Edit User Modal ---
 interface EditUserModalProps {
     user: UserProfile;
-    organizations: Organization[];
-    supervisors: Supervisor[];
     onClose: () => void;
     onSave: (uid: string, data: Partial<UserProfile>) => void;
 }
 
-const EditUserModal: React.FC<EditUserModalProps> = ({ user, organizations, supervisors, onClose, onSave }) => {
+const EditUserModal: React.FC<EditUserModalProps> = ({ user, onClose, onSave }) => {
     const [displayName, setDisplayName] = useState(user.displayName || '');
     const [address, setAddress] = useState(user.address || '');
     const [phone, setPhone] = useState(user.phone || '');
     const [role, setRole] = useState(user.role);
     const [department, setDepartment] = useState<Department | ''>(user.department || '');
     const [status, setStatus] = useState(user.status);
-    const [organizationId, setOrganizationId] = useState(user.organizationId || '');
-    const [supervisorId, setSupervisorId] = useState(user.supervisorId || '');
-
-    // Filter supervisors based on selected organization
-    const filteredSupervisors = useMemo(() => {
-        if (!organizationId) return [];
-        return supervisors.filter(s => s.organizationId === organizationId);
-    }, [organizationId, supervisors]);
 
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
@@ -342,11 +338,9 @@ const EditUserModal: React.FC<EditUserModalProps> = ({ user, organizations, supe
             address,
             phone,
             role,
-            department: department || undefined,
+            department: department || null,
             status,
-            organizationId: organizationId || undefined,
-            supervisorId: supervisorId || undefined
-        });
+        } as any);
         onClose();
     };
 
@@ -423,26 +417,6 @@ const EditUserModal: React.FC<EditUserModalProps> = ({ user, organizations, supe
                                 <option value={UserStatus.Pending}>In afwachting</option>
                             </select>
                         </div>
-                        
-                        <div className="border-t border-gray-200 dark:border-gray-700 col-span-1 md:col-span-2 pt-4 mt-2">
-                             <h3 className="text-sm font-medium text-gray-900 dark:text-white mb-2">Organisatie & Begeleiding</h3>
-                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Organisatie</label>
-                                    <select value={organizationId} onChange={e => { setOrganizationId(e.target.value); setSupervisorId(''); }} className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700 p-2">
-                                        <option value="">Geen Organisatie</option>
-                                        {organizations.map(org => <option key={org.id} value={org.id}>{org.name}</option>)}
-                                    </select>
-                                </div>
-                                <div>
-                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Begeleider</label>
-                                    <select value={supervisorId} onChange={e => setSupervisorId(e.target.value)} disabled={!organizationId} className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700 p-2 disabled:bg-gray-100 dark:disabled:bg-gray-600">
-                                        <option value="">Geen Begeleider</option>
-                                        {filteredSupervisors.map(sup => <option key={sup.id} value={sup.id}>{sup.name}</option>)}
-                                    </select>
-                                </div>
-                             </div>
-                        </div>
                     </div>
 
                     <div className="flex justify-end gap-3 mt-8 pt-4 border-t border-gray-200 dark:border-gray-700">
@@ -457,19 +431,17 @@ const EditUserModal: React.FC<EditUserModalProps> = ({ user, organizations, supe
     );
 };
 
-
 // --- Users View ---
 interface UsersViewProps {
     users: UserProfile[];
-    organizations: Organization[];
-    supervisors: Supervisor[];
     onUpdateUser: (uid: string, data: Partial<UserProfile>) => void;
     currentUserEmail: string;
 }
 
-const UsersView: React.FC<UsersViewProps> = ({ users, organizations, supervisors, onUpdateUser, currentUserEmail }) => {
+const UsersView: React.FC<UsersViewProps> = ({ users, onUpdateUser, currentUserEmail }) => {
     const [isAddModalOpen, setIsAddModalOpen] = useState(false);
     const [editingUser, setEditingUser] = useState<UserProfile | null>(null);
+    const [searchTerm, setSearchTerm] = useState('');
 
     const handleDeleteUser = async (e: React.MouseEvent, uid: string) => {
         e.stopPropagation();
@@ -483,7 +455,14 @@ const UsersView: React.FC<UsersViewProps> = ({ users, organizations, supervisors
         }
     };
     
-    const getOrgName = (id?: string) => organizations.find(o => o.id === id)?.name || '-';
+    const filteredUsers = useMemo(() => {
+        return users.filter(user => 
+            (user.displayName && user.displayName.toLowerCase().includes(searchTerm.toLowerCase())) ||
+            user.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
+            (user.role && user.role.toLowerCase().includes(searchTerm.toLowerCase())) ||
+            (user.department && user.department.toLowerCase().includes(searchTerm.toLowerCase()))
+        );
+    }, [users, searchTerm]);
 
     return (
         <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg">
@@ -497,344 +476,104 @@ const UsersView: React.FC<UsersViewProps> = ({ users, organizations, supervisors
             {editingUser && (
                 <EditUserModal 
                     user={editingUser}
-                    organizations={organizations}
-                    supervisors={supervisors}
                     onClose={() => setEditingUser(null)}
                     onSave={onUpdateUser}
                 />
             )}
 
-            <div className="flex justify-between items-center mb-6">
-                <h2 className="text-3xl font-bold text-gray-900 dark:text-white">Medewerkersbeheer</h2>
-                <button 
-                    onClick={() => setIsAddModalOpen(true)}
-                    className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700"
-                >
-                    <PlusIcon className="w-5 h-5" />
-                    Nieuwe Medewerker
-                </button>
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
+                <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Medewerkers</h2>
+                <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+                        <div className="relative rounded-md shadow-sm">
+                        <div className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3">
+                            <MagnifyingGlassIcon className="h-5 w-5 text-gray-400" />
+                        </div>
+                        <input
+                            type="text"
+                            value={searchTerm}
+                            onChange={(e) => setSearchTerm(e.target.value)}
+                            className="block w-full rounded-md border-gray-300 pl-10 focus:border-blue-500 focus:ring-blue-500 sm:text-sm dark:bg-gray-700 dark:border-gray-600 p-2"
+                            placeholder="Zoeken..."
+                        />
+                    </div>
+                    <button 
+                        onClick={() => setIsAddModalOpen(true)}
+                        className="flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700"
+                    >
+                        <PlusIcon className="w-5 h-5" />
+                        <span className="whitespace-nowrap">Nieuwe Medewerker</span>
+                    </button>
+                </div>
             </div>
 
             <div className="overflow-hidden shadow ring-1 ring-black ring-opacity-5 rounded-lg">
-                <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-                    <thead className="bg-gray-50 dark:bg-gray-700">
-                        <tr>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Naam / Email</th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Rol</th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Organisatie</th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Status</th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Acties</th>
-                        </tr>
-                    </thead>
-                    <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-                        {users.map(user => {
-                            const isCurrentUser = user.email === currentUserEmail;
-                            return (
-                                <tr 
-                                    key={user.uid} 
-                                    className="hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer transition-colors"
-                                    onClick={() => !isCurrentUser && setEditingUser(user)}
-                                >
-                                    <td className="px-6 py-4 whitespace-nowrap">
-                                        <div className="flex flex-col">
-                                            <span className="text-sm font-medium text-gray-900 dark:text-white">
-                                                {user.displayName || user.email}
-                                            </span>
-                                            {user.displayName && (
-                                                <span className="text-xs text-gray-500 dark:text-gray-400">{user.email}</span>
-                                            )}
-                                        </div>
-                                    </td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
-                                        {user.role} 
-                                        {user.department && <span className="ml-2 text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">{user.department}</span>}
-                                    </td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
-                                        {getOrgName(user.organizationId)}
-                                    </td>
-                                    <td className="px-6 py-4 whitespace-nowrap">
-                                         <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                                            user.status === UserStatus.Active ? 'bg-green-100 text-green-800' : 
-                                            user.status === UserStatus.Inactive ? 'bg-red-100 text-red-800' : 
-                                            'bg-yellow-100 text-yellow-800'
-                                        }`}>
-                                            {user.status === UserStatus.Active ? 'Actief' : user.status === UserStatus.Inactive ? 'Inactief' : 'In afwachting'}
-                                        </span>
-                                    </td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                        {!isCurrentUser ? (
-                                            <div className="flex gap-4">
-                                                <button className="text-blue-600 hover:text-blue-900 font-medium">Bewerken</button>
-                                                <button 
-                                                    onClick={(e) => handleDeleteUser(e, user.uid)}
-                                                    className="text-red-600 hover:text-red-900 dark:hover:text-red-400"
-                                                    title="Verwijder gebruiker"
-                                                >
-                                                    <TrashIcon className="w-5 h-5" />
-                                                </button>
-                                            </div>
-                                        ) : (
-                                            <span className="text-xs italic text-gray-400"> (Uzelf) </span>
-                                        )}
-                                    </td>
-                                </tr>
-                            );
-                        })}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    );
-};
-
-// --- Organizations View ---
-const AddOrganizationModal = ({ onClose, onAdd, organizationToEdit }: { onClose: () => void, onAdd: (org: Organization) => void, organizationToEdit?: Organization }) => {
-    const [name, setName] = useState(organizationToEdit?.name || '');
-    const [address, setAddress] = useState(organizationToEdit?.address || '');
-    const [phone, setPhone] = useState(organizationToEdit?.phone || '');
-    const [logo, setLogo] = useState(organizationToEdit?.logo || '');
-
-    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0];
-        if (file) {
-            const reader = new FileReader();
-            reader.onloadend = () => {
-                setLogo(reader.result as string);
-            };
-            reader.readAsDataURL(file);
-        }
-    };
-
-    const handleSubmit = (e: React.FormEvent) => {
-        e.preventDefault();
-        onAdd({
-            id: organizationToEdit?.id || '', // ID handled by parent or Firestore
-            name,
-            address,
-            phone,
-            logo
-        });
-        onClose();
-    };
-
-    return (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50">
-            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl w-full max-w-md">
-                <h3 className="text-lg font-bold mb-4 text-gray-900 dark:text-white">{organizationToEdit ? 'Organisatie Wijzigen' : 'Organisatie Toevoegen'}</h3>
-                <form onSubmit={handleSubmit} className="space-y-4">
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Naam</label>
-                        <input required type="text" value={name} onChange={e => setName(e.target.value)} className="mt-1 block w-full border rounded p-2 dark:bg-gray-700 dark:border-gray-600" />
-                    </div>
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Adres</label>
-                        <input type="text" value={address} onChange={e => setAddress(e.target.value)} className="mt-1 block w-full border rounded p-2 dark:bg-gray-700 dark:border-gray-600" />
-                    </div>
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Telefoonnummer</label>
-                        <input type="text" value={phone} onChange={e => setPhone(e.target.value)} className="mt-1 block w-full border rounded p-2 dark:bg-gray-700 dark:border-gray-600" />
-                    </div>
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Logo</label>
-                        <input type="file" accept="image/*" onChange={handleFileChange} className="mt-1 block w-full text-sm text-gray-500 dark:text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100" />
-                        {logo && <img src={logo} alt="Preview" className="mt-2 h-16 object-contain" />}
-                    </div>
-                    <div className="flex justify-end gap-3 mt-6">
-                        <button type="button" onClick={onClose} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded">Annuleren</button>
-                        <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">Opslaan</button>
-                    </div>
-                </form>
-            </div>
-        </div>
-    );
-};
-
-const OrganizationsView = ({ organizations }: { organizations: Organization[] }) => {
-    const [isModalOpen, setIsModalOpen] = useState(false);
-    const [editingOrg, setEditingOrg] = useState<Organization | undefined>(undefined);
-
-    const handleSave = async (org: Organization) => {
-        try {
-            if (org.id) {
-                 await updateDoc(doc(db, "organisaties", org.id), { ...org });
-            } else {
-                 await addDoc(collection(db, "organisaties"), org);
-            }
-        } catch (e) {
-            console.error("Error saving organization", e);
-            alert("Fout bij opslaan organisatie");
-        }
-    };
-    
-    const handleDelete = async (id: string) => {
-        if(confirm("Weet u zeker dat u deze organisatie wilt verwijderen?")) {
-            await deleteDoc(doc(db, "organisaties", id));
-        }
-    }
-
-    return (
-        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg">
-             {isModalOpen && (
-                <AddOrganizationModal 
-                    onClose={() => { setIsModalOpen(false); setEditingOrg(undefined); }}
-                    onAdd={handleSave}
-                    organizationToEdit={editingOrg}
-                />
-            )}
-            <div className="flex justify-between items-center mb-6">
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Organisaties</h2>
-                <button onClick={() => setIsModalOpen(true)} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
-                    <PlusIcon className="w-5 h-5"/> Nieuwe Organisatie Toevoegen
-                </button>
-            </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {organizations.map(org => (
-                    <div key={org.id} className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 flex flex-col justify-between hover:shadow-md transition-shadow">
-                        <div>
-                            <div className="flex items-center justify-between mb-4">
-                                {org.logo ? <img src={org.logo} alt={org.name} className="h-12 w-auto object-contain" /> : <div className="h-12 w-12 bg-gray-100 rounded-full flex items-center justify-center text-gray-400">?</div>}
-                                <div className="flex gap-2">
-                                     <button onClick={() => { setEditingOrg(org); setIsModalOpen(true); }} className="text-blue-600 hover:text-blue-800 text-sm">Wijzigen</button>
-                                     <button onClick={() => handleDelete(org.id)} className="text-red-600 hover:text-red-800"><TrashIcon className="w-4 h-4"/></button>
-                                </div>
-                            </div>
-                            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">{org.name}</h3>
-                            <p className="text-sm text-gray-600 dark:text-gray-300 mt-1">{org.address || 'Geen adres'}</p>
-                            <p className="text-sm text-gray-600 dark:text-gray-300">{org.phone || 'Geen telefoon'}</p>
-                        </div>
-                    </div>
-                ))}
-                {organizations.length === 0 && <p className="col-span-full text-center text-gray-500">Geen organisaties gevonden.</p>}
-            </div>
-        </div>
-    );
-};
-
-// --- Supervisors View ---
-const AddSupervisorModal = ({ onClose, onAdd, supervisorToEdit, organizations }: { onClose: () => void, onAdd: (sup: Supervisor) => void, supervisorToEdit?: Supervisor, organizations: Organization[] }) => {
-    const [name, setName] = useState(supervisorToEdit?.name || '');
-    const [email, setEmail] = useState(supervisorToEdit?.email || '');
-    const [phone, setPhone] = useState(supervisorToEdit?.phone || '');
-    const [organizationId, setOrganizationId] = useState(supervisorToEdit?.organizationId || '');
-
-    const handleSubmit = (e: React.FormEvent) => {
-        e.preventDefault();
-        onAdd({
-            id: supervisorToEdit?.id || '',
-            name,
-            email,
-            phone,
-            organizationId
-        });
-        onClose();
-    };
-
-    return (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50">
-            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl w-full max-w-md">
-                <h3 className="text-lg font-bold mb-4 text-gray-900 dark:text-white">{supervisorToEdit ? 'Begeleider Wijzigen' : 'Begeleider Toevoegen'}</h3>
-                <form onSubmit={handleSubmit} className="space-y-4">
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Naam</label>
-                        <input required type="text" value={name} onChange={e => setName(e.target.value)} className="mt-1 block w-full border rounded p-2 dark:bg-gray-700 dark:border-gray-600" />
-                    </div>
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Email</label>
-                        <input required type="email" value={email} onChange={e => setEmail(e.target.value)} className="mt-1 block w-full border rounded p-2 dark:bg-gray-700 dark:border-gray-600" />
-                    </div>
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Telefoon</label>
-                        <input type="text" value={phone} onChange={e => setPhone(e.target.value)} className="mt-1 block w-full border rounded p-2 dark:bg-gray-700 dark:border-gray-600" />
-                    </div>
-                    <div>
-                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Organisatie</label>
-                         <select required value={organizationId} onChange={e => setOrganizationId(e.target.value)} className="mt-1 block w-full border rounded p-2 dark:bg-gray-700 dark:border-gray-600">
-                            <option value="">Selecteer Organisatie</option>
-                            {organizations.map(org => <option key={org.id} value={org.id}>{org.name}</option>)}
-                        </select>
-                    </div>
-                    <div className="flex justify-end gap-3 mt-6">
-                        <button type="button" onClick={onClose} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded">Annuleren</button>
-                        <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">Opslaan</button>
-                    </div>
-                </form>
-            </div>
-        </div>
-    );
-};
-
-const SupervisorsView = ({ supervisors, organizations }: { supervisors: Supervisor[], organizations: Organization[] }) => {
-    const [isModalOpen, setIsModalOpen] = useState(false);
-    const [editingSup, setEditingSup] = useState<Supervisor | undefined>(undefined);
-
-    const handleSave = async (sup: Supervisor) => {
-        try {
-            if (sup.id) {
-                 await updateDoc(doc(db, "begeleiders", sup.id), { ...sup });
-            } else {
-                 await addDoc(collection(db, "begeleiders"), sup);
-            }
-        } catch (e) {
-            console.error("Error saving supervisor", e);
-            alert("Fout bij opslaan begeleider");
-        }
-    };
-
-    const handleDelete = async (id: string) => {
-        if(confirm("Weet u zeker dat u deze begeleider wilt verwijderen?")) {
-            await deleteDoc(doc(db, "begeleiders", id));
-        }
-    }
-
-    const getOrgName = (id: string) => organizations.find(o => o.id === id)?.name || 'Onbekend';
-
-    return (
-        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg">
-             {isModalOpen && (
-                <AddSupervisorModal 
-                    onClose={() => { setIsModalOpen(false); setEditingSup(undefined); }}
-                    onAdd={handleSave}
-                    supervisorToEdit={editingSup}
-                    organizations={organizations}
-                />
-            )}
-            <div className="flex justify-between items-center mb-6">
-                <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Begeleiders</h2>
-                <button onClick={() => setIsModalOpen(true)} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
-                    <PlusIcon className="w-5 h-5"/> Nieuwe Begeleider
-                </button>
-            </div>
-            <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-                    <thead className="bg-gray-50 dark:bg-gray-700">
-                        <tr>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Naam</th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Email</th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Telefoon</th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Organisatie</th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Acties</th>
-                        </tr>
-                    </thead>
-                    <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-                        {supervisors.map(sup => (
-                            <tr key={sup.id}>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">{sup.name}</td>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{sup.email}</td>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{sup.phone}</td>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{getOrgName(sup.organizationId)}</td>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                     <div className="flex gap-4">
-                                        <button onClick={() => { setEditingSup(sup); setIsModalOpen(true); }} className="text-blue-600 hover:text-blue-900 font-medium">Bewerken</button>
-                                        <button onClick={() => handleDelete(sup.id)} className="text-red-600 hover:text-red-900"><TrashIcon className="w-5 h-5"/></button>
-                                     </div>
-                                </td>
+                    <div className="overflow-x-auto">
+                    <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                        <thead className="bg-gray-50 dark:bg-gray-700">
+                            <tr>
+                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Naam / Email</th>
+                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Rol</th>
+                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Status</th>
+                                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Acties</th>
                             </tr>
-                        ))}
-                         {supervisors.length === 0 && (
-                            <tr><td colSpan={5} className="px-6 py-4 text-center text-gray-500">Geen begeleiders gevonden.</td></tr>
-                        )}
-                    </tbody>
-                </table>
+                        </thead>
+                        <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
+                            {filteredUsers.map(user => {
+                                const isCurrentUser = user.email === currentUserEmail;
+                                return (
+                                    <tr 
+                                        key={user.uid} 
+                                        className="hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer transition-colors"
+                                        onClick={() => !isCurrentUser && setEditingUser(user)}
+                                    >
+                                        <td className="px-6 py-4 whitespace-nowrap">
+                                            <div className="flex flex-col">
+                                                <span className="text-sm font-medium text-gray-900 dark:text-white">
+                                                    {user.displayName || user.email}
+                                                </span>
+                                                {user.displayName && (
+                                                    <span className="text-xs text-gray-500 dark:text-gray-400">{user.email}</span>
+                                                )}
+                                            </div>
+                                        </td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
+                                            {user.role} 
+                                            {user.department && <span className="ml-2 text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">{user.department}</span>}
+                                        </td>
+                                        <td className="px-6 py-4 whitespace-nowrap">
+                                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                                                user.status === UserStatus.Active ? 'bg-green-100 text-green-800' : 
+                                                user.status === UserStatus.Inactive ? 'bg-red-100 text-red-800' : 
+                                                'bg-yellow-100 text-yellow-800'
+                                            }`}>
+                                                {user.status === UserStatus.Active ? 'Actief' : user.status === UserStatus.Inactive ? 'Inactief' : 'In afwachting'}
+                                            </span>
+                                        </td>
+                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                            {!isCurrentUser ? (
+                                                <div className="flex gap-4">
+                                                    <button className="text-blue-600 hover:text-blue-900 font-medium">Bewerken</button>
+                                                    <button 
+                                                        onClick={(e) => handleDeleteUser(e, user.uid)}
+                                                        className="text-red-600 hover:text-red-900 dark:hover:text-red-400"
+                                                        title="Verwijder gebruiker"
+                                                    >
+                                                        <TrashIcon className="w-5 h-5" />
+                                                    </button>
+                                                </div>
+                                            ) : (
+                                                <span className="text-xs italic text-gray-400"> (Uzelf) </span>
+                                            )}
+                                        </td>
+                                    </tr>
+                                );
+                            })}
+                            {filteredUsers.length === 0 && (
+                                <tr><td colSpan={4} className="px-6 py-4 text-center text-gray-500">Geen medewerkers gevonden.</td></tr>
+                            )}
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </div>
     );
@@ -861,8 +600,6 @@ const Header = ({ activeTab, setActiveTab, userProfile }: { activeTab: AppTab, s
         { id: 'klanten', label: 'Klanten', roles: [UserRole.Beheerder, UserRole.Teamleider] },
         { id: 'vervoer', label: 'Vervoer', roles: [UserRole.Beheerder, UserRole.Teamleider] },
         { id: 'gebruikers', label: 'Gebruikers', roles: [UserRole.Beheerder] },
-        { id: 'organisaties', label: 'Organisaties', roles: [UserRole.Beheerder] },
-        { id: 'begeleiders', label: 'Begeleiders', roles: [UserRole.Beheerder] },
         { id: 'mijn-account', label: 'Mijn Account' },
     ];
 
@@ -1012,12 +749,19 @@ const Dashboard = ({ orders, onUpdateFurnitureDepartment, userProfile, onUpdateF
                                                      <select 
                                                         value={item.department} 
                                                         onChange={(e) => onUpdateFurnitureDepartment(order.orderNumber, item.id, e.target.value as Department)}
-                                                        className="block w-full text-xs rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-600 text-gray-900 dark:text-white"
+                                                        disabled={userProfile.role === UserRole.Medewerker}
+                                                        className="block w-full text-xs rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-600 text-gray-900 dark:text-white disabled:opacity-50 disabled:bg-gray-100 dark:disabled:bg-gray-700"
                                                      >
                                                          {DEPARTMENT_ORDER.map(dept => (
                                                              <option key={dept} value={dept}>{dept}</option>
                                                          ))}
                                                      </select>
+                                                     {userProfile.role === UserRole.Beheerder && (
+                                                        <div className="flex w-full justify-between mt-2">
+                                                            <button onClick={() => onUpdateFurniturePriority(order.orderNumber, item.id, (item.priority || 0) + 1)} className="text-xs bg-gray-200 dark:bg-gray-600 px-2 py-1 rounded hover:bg-gray-300">▲</button>
+                                                            <button onClick={() => onUpdateFurniturePriority(order.orderNumber, item.id, (item.priority || 0) - 1)} className="text-xs bg-gray-200 dark:bg-gray-600 px-2 py-1 rounded hover:bg-gray-300">▼</button>
+                                                        </div>
+                                                     )}
                                                  </div>
                                             </li>
                                         );
@@ -1142,20 +886,193 @@ const NewOrderForm = ({ addOrder, setActiveTab }: { addOrder: (order: Order) => 
     );
 };
 
-const CustomersView = ({ orders }: { orders: Order[], onUpdateOrder: any }) => {
+const CustomerHistoryModal = ({ customer, orders, onClose }: { customer: Customer & { firstSeen: number }, orders: Order[], onClose: () => void }) => {
+    // Filter orders specifically for this customer
+    const customerOrders = useMemo(() => {
+        return orders
+            .filter(o => o.customer.email === customer.email)
+            .sort((a, b) => new Date(b.pickupDate).getTime() - new Date(a.pickupDate).getTime());
+    }, [orders, customer.email]);
+
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50 p-4">
+            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl w-full max-w-3xl max-h-[85vh] overflow-y-auto">
+                <div className="flex justify-between items-center mb-6 border-b pb-2 dark:border-gray-700">
+                    <div>
+                        <h2 className="text-2xl font-bold text-gray-900 dark:text-white">{customer.name}</h2>
+                        <p className="text-sm text-gray-500 dark:text-gray-400">{customer.email} | {customer.phone}</p>
+                    </div>
+                    <button onClick={onClose} className="text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
+                        <XMarkIcon className="w-6 h-6" />
+                    </button>
+                </div>
+
+                <div className="space-y-6">
+                    {customerOrders.length > 0 ? (
+                        customerOrders.map(order => (
+                            <div key={order.orderNumber} className="border rounded-lg p-4 dark:border-gray-700 bg-gray-50 dark:bg-gray-700">
+                                <div className="flex justify-between items-center mb-2">
+                                    <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
+                                        Project: {order.title} <span className="text-sm font-normal text-gray-500 dark:text-gray-400">(#{order.orderNumber})</span>
+                                    </h3>
+                                    <span className={`px-2 py-0.5 text-xs rounded-full ${order.status === 'Actief' ? 'bg-green-100 text-green-800' : 'bg-gray-200 text-gray-800'}`}>
+                                        {order.status}
+                                    </span>
+                                </div>
+                                <p className="text-sm text-gray-600 dark:text-gray-300 mb-3">Datum: {new Date(order.pickupDate).toLocaleDateString()}</p>
+                                
+                                <div className="bg-white dark:bg-gray-800 rounded p-3 shadow-sm">
+                                    <h4 className="text-sm font-medium text-gray-900 dark:text-white mb-2">Meubels & Bewerkingen:</h4>
+                                    <ul className="space-y-2">
+                                        {order.furniture.map((item, idx) => (
+                                            <li key={idx} className="flex justify-between text-sm border-b last:border-0 pb-1 dark:border-gray-700">
+                                                <span className="font-medium text-gray-800 dark:text-gray-200">{item.type}</span>
+                                                <span className="text-blue-600 dark:text-blue-400">{item.treatment || 'Geen specifieke bewerking'}</span>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            </div>
+                        ))
+                    ) : (
+                        <p className="text-center text-gray-500">Geen geschiedenis gevonden.</p>
+                    )}
+                </div>
+                
+                <div className="mt-6 flex justify-end">
+                    <button onClick={onClose} className="px-4 py-2 bg-gray-200 dark:bg-gray-600 text-gray-800 dark:text-white rounded hover:bg-gray-300 dark:hover:bg-gray-500">Sluiten</button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const CustomersView = ({ orders, onUpdateOrder }: { orders: Order[], onUpdateOrder: any }) => {
+    const [sortMethod, setSortMethod] = useState<'nameAsc' | 'nameDesc' | 'dateNewest' | 'dateOldest'>('nameAsc');
+    const [selectedCustomer, setSelectedCustomer] = useState<(Customer & { firstSeen: number }) | null>(null);
+
+    // Combineer klantgegevens en bepaal de 'eerst gezien' datum op basis van de ophaaldatum van de eerste order
     const customers = useMemo(() => {
-        const map = new Map();
+        const map = new Map<string, Customer & { firstSeen: number }>();
+        
         orders.forEach(o => {
-            if (!map.has(o.customer.email)) {
-                map.set(o.customer.email, o.customer);
+            const email = o.customer.email;
+            const orderDate = new Date(o.pickupDate).getTime();
+            
+            if (!map.has(email)) {
+                map.set(email, { ...o.customer, firstSeen: orderDate });
+            } else {
+                // Update firstSeen als we een oudere order vinden voor deze klant
+                const existing = map.get(email)!;
+                if (orderDate < existing.firstSeen) {
+                    existing.firstSeen = orderDate;
+                }
             }
         });
         return Array.from(map.values());
     }, [orders]);
 
+    // Sorteer logica
+    const sortedCustomers = useMemo(() => {
+        return [...customers].sort((a, b) => {
+            if (sortMethod === 'nameAsc') return a.name.localeCompare(b.name);
+            if (sortMethod === 'nameDesc') return b.name.localeCompare(a.name);
+            if (sortMethod === 'dateNewest') return b.firstSeen - a.firstSeen;
+            if (sortMethod === 'dateOldest') return a.firstSeen - b.firstSeen;
+            return 0;
+        });
+    }, [customers, sortMethod]);
+
+    const handleExportCSV = () => {
+        const headers = ['Klantnummer', 'Naam', 'Email', 'Telefoon', 'Adres', 'Ordernummer', 'Project Titel', 'Order Datum', 'Meubelstuk', 'Bewerking/Kleur'];
+        const rows: string[][] = [];
+
+        // Iterate through all known customers
+        sortedCustomers.forEach(customer => {
+            // Find all orders for this customer
+            const customerOrders = orders.filter(o => o.customer.email === customer.email);
+            
+            if (customerOrders.length === 0) {
+                // Should technically not happen if list comes from orders, but good fallback
+                rows.push([
+                    customer.customerNumber,
+                    `"${customer.name}"`,
+                    customer.email,
+                    customer.phone,
+                    `"${customer.address}"`,
+                    "-", "-", "-", "-", "-" 
+                ]);
+            } else {
+                customerOrders.forEach(order => {
+                    // Create a row for each furniture item to show specific color/treatment
+                    order.furniture.forEach(item => {
+                        rows.push([
+                            customer.customerNumber,
+                            `"${customer.name}"`,
+                            customer.email,
+                            customer.phone,
+                            `"${customer.address}"`,
+                            order.orderNumber,
+                            `"${order.title}"`,
+                            new Date(order.pickupDate).toLocaleDateString(),
+                            `"${item.type}"`,
+                            `"${item.treatment}"` // This allows filtering by color/treatment in Excel
+                        ]);
+                    });
+                });
+            }
+        });
+
+        const csvContent = [
+            headers.join(','), 
+            ...rows.map(row => row.join(','))
+        ].join('\n');
+
+        const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.setAttribute('download', 'klanten_historie_export.csv');
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    };
+
     return (
         <div className="bg-white dark:bg-gray-800 shadow rounded-lg p-6">
-            <h2 className="text-2xl font-bold mb-4 text-gray-900 dark:text-white">Klantenbestand</h2>
+            {selectedCustomer && (
+                <CustomerHistoryModal 
+                    customer={selectedCustomer} 
+                    orders={orders} 
+                    onClose={() => setSelectedCustomer(null)} 
+                />
+            )}
+
+            <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
+                <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Klantenbestand</h2>
+                
+                <div className="flex gap-2 w-full md:w-auto">
+                    <select 
+                        value={sortMethod} 
+                        onChange={(e) => setSortMethod(e.target.value as any)}
+                        className="border border-gray-300 dark:border-gray-600 rounded-md shadow-sm py-2 px-3 bg-white dark:bg-gray-700 text-sm font-medium text-gray-700 dark:text-gray-200 focus:outline-none focus:ring-blue-500 focus:border-blue-500"
+                    >
+                        <option value="nameAsc">Naam (A-Z)</option>
+                        <option value="nameDesc">Naam (Z-A)</option>
+                        <option value="dateNewest">Nieuwste eerst</option>
+                        <option value="dateOldest">Oudste eerst</option>
+                    </select>
+
+                    <button 
+                        onClick={handleExportCSV}
+                        className="inline-flex items-center px-4 py-2 border border-gray-300 dark:border-gray-600 shadow-sm text-sm font-medium rounded-md text-gray-700 dark:text-gray-200 bg-white dark:bg-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                    >
+                        <DownloadIcon className="h-5 w-5 mr-2 text-gray-500 dark:text-gray-400" />
+                        Export Historie
+                    </button>
+                </div>
+            </div>
+
             <div className="overflow-x-auto">
                 <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
                     <thead className="bg-gray-50 dark:bg-gray-700">
@@ -1164,17 +1081,32 @@ const CustomersView = ({ orders }: { orders: Order[], onUpdateOrder: any }) => {
                             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Email</th>
                             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Telefoon</th>
                             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Adres</th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Eerste Contact</th>
                         </tr>
                     </thead>
                     <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-                        {customers.map((c, idx) => (
-                            <tr key={idx}>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">{c.name}</td>
+                        {sortedCustomers.map((c, idx) => (
+                            <tr 
+                                key={idx} 
+                                onClick={() => setSelectedCustomer(c)}
+                                className="hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer transition-colors group"
+                            >
+                                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-blue-600 dark:text-blue-400 group-hover:underline">
+                                    {c.name}
+                                </td>
                                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{c.email}</td>
                                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{c.phone}</td>
                                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{c.address}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{new Date(c.firstSeen).toLocaleDateString()}</td>
                             </tr>
                         ))}
+                        {sortedCustomers.length === 0 && (
+                            <tr>
+                                <td colSpan={5} className="px-6 py-4 text-center text-sm text-gray-500 dark:text-gray-400">
+                                    Geen klanten gevonden.
+                                </td>
+                            </tr>
+                        )}
                     </tbody>
                 </table>
             </div>
@@ -1249,16 +1181,6 @@ const MyAccountView = ({ userProfile }: { userProfile: UserProfile }) => {
                     <label className="block text-sm font-medium text-gray-500 dark:text-gray-400">Afdeling</label>
                     <p className="mt-1 text-lg font-medium text-gray-900 dark:text-white">{userProfile.department || 'Geen'}</p>
                 </div>
-                 {userProfile.supervisorId && (
-                     <div>
-                        <label className="block text-sm font-medium text-gray-500 dark:text-gray-400">Begeleider</label>
-                        <p className="mt-1 text-lg font-medium text-gray-900 dark:text-white">
-                             {/* Note: We don't have supervisor names here directly, usually you'd lookup. 
-                                For now just showing ID or simple text to indicate connection */}
-                             (Gekoppeld aan begeleider)
-                        </p>
-                    </div>
-                 )}
                 <div>
                     <label className="block text-sm font-medium text-gray-500 dark:text-gray-400">Status</label>
                     <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${userProfile.status === UserStatus.Active ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>
@@ -1301,11 +1223,9 @@ const ScheduleDeliveryModal = ({ order, onClose, onSchedule }: { order: Order, o
 };
 
 // --- Main App Component ---
-const PlannerApp = ({ userProfile, allUsers, organizations, supervisors, onUpdateUser }: { 
+const PlannerApp = ({ userProfile, allUsers, onUpdateUser }: { 
     userProfile: UserProfile, 
     allUsers: UserProfile[], 
-    organizations: Organization[],
-    supervisors: Supervisor[],
     onUpdateUser: (uid: string, data: Partial<UserProfile>) => void 
 }) => {
   const [orders, setOrders] = useState<Order[]>([]);
@@ -1418,11 +1338,7 @@ const PlannerApp = ({ userProfile, allUsers, organizations, supervisors, onUpdat
         return <TransportView orders={orders} updateOrder={updateOrder} />;
       case 'gebruikers':
         if (userProfile.role !== UserRole.Beheerder) return <p>Geen toegang</p>;
-        return <UsersView users={allUsers} organizations={organizations} supervisors={supervisors} onUpdateUser={onUpdateUser} currentUserEmail={userProfile.email} />;
-      case 'organisaties':
-        return <OrganizationsView organizations={organizations} />;
-      case 'begeleiders':
-        return <SupervisorsView supervisors={supervisors} organizations={organizations} />;
+        return <UsersView users={allUsers} onUpdateUser={onUpdateUser} currentUserEmail={userProfile.email} />;
       case 'mijn-account':
           return <MyAccountView userProfile={userProfile} />;
       default:
@@ -1476,8 +1392,6 @@ export default function App() {
     const [user, setUser] = useState<User | null>(null);
     const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
     const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
-    const [organizations, setOrganizations] = useState<Organization[]>([]);
-    const [supervisors, setSupervisors] = useState<Supervisor[]>([]);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
@@ -1533,29 +1447,11 @@ export default function App() {
                 }));
             });
 
-            const orgsQuery = query(collection(db, "organisaties"));
-            const unsubscribeOrgs = onSnapshot(orgsQuery, (snapshot) => {
-                const orgsData: Organization[] = [];
-                snapshot.forEach(doc => orgsData.push({ id: doc.id, ...doc.data() } as Organization));
-                setOrganizations(orgsData);
-            });
-
-            const supsQuery = query(collection(db, "begeleiders"));
-            const unsubscribeSups = onSnapshot(supsQuery, (snapshot) => {
-                const supsData: Supervisor[] = [];
-                snapshot.forEach(doc => supsData.push({ id: doc.id, ...doc.data() } as Supervisor));
-                setSupervisors(supsData);
-            });
-
             return () => {
                 unsubscribeUsers();
-                unsubscribeOrgs();
-                unsubscribeSups();
             };
         } else {
             setAllUsers([]);
-            setOrganizations([]);
-            setSupervisors([]);
         }
     }, [userProfile]);
 
@@ -1589,5 +1485,5 @@ export default function App() {
         return <PendingApprovalScreen />;
     }
 
-    return <PlannerApp userProfile={userProfile} allUsers={allUsers} organizations={organizations} supervisors={supervisors} onUpdateUser={handleUpdateUser} />;
+    return <PlannerApp userProfile={userProfile} allUsers={allUsers} onUpdateUser={handleUpdateUser} />;
 }
