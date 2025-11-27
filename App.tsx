@@ -1,9 +1,9 @@
 
 import React, { useState, useCallback, useMemo, useEffect } from 'react';
-import { AppTab, Order, Department, FurnitureItem, Customer, UserProfile, UserRole, UserStatus } from './types';
+import { AppTab, Order, Department, FurnitureItem, Customer, UserProfile, UserRole, UserStatus, Organization, Supervisor } from './types';
 import { DEPARTMENT_ORDER, DEPARTMENT_COLORS, COMPANY_INFO } from './constants';
-import { CalendarIcon, DownloadIcon, PrintIcon, PlusIcon, TrashIcon } from './components/Icons';
-import { auth, db, signInWithEmailAndPassword, onAuthStateChanged, signOut, User, createUserWithEmailAndPassword, collection, doc, setDoc, onSnapshot, query, getDoc, updateDoc, runTransaction } from './firebase';
+import { CalendarIcon, DownloadIcon, PrintIcon, PlusIcon, TrashIcon, MenuIcon, XMarkIcon } from './components/Icons';
+import { auth, db, signInWithEmailAndPassword, onAuthStateChanged, signOut, User, createUserWithEmailAndPassword, collection, doc, setDoc, onSnapshot, query, getDoc, updateDoc, runTransaction, deleteDoc, firebaseConfig, initializeApp, deleteApp, getAuth, addDoc } from './firebase';
 
 
 // Use jsPDF from window object
@@ -210,62 +210,372 @@ const InactiveAccountScreen = () => {
     );
 };
 
+// --- Add User Modal ---
+interface AddUserModalProps {
+    onClose: () => void;
+    onUserAdded: () => void;
+}
+
+const AddUserModal: React.FC<AddUserModalProps> = ({ onClose, onUserAdded }) => {
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    const [role, setRole] = useState<UserRole>(UserRole.Medewerker);
+    const [department, setDepartment] = useState<Department | ''>('');
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+
+    const handleSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setLoading(true);
+        setError(null);
+
+        // We use a secondary app instance to create the user so the admin doesn't get signed out
+        let secondaryApp: any = null;
+        
+        try {
+            secondaryApp = initializeApp(firebaseConfig, "Secondary");
+            const secondaryAuth = getAuth(secondaryApp);
+            
+            const userCredential = await createUserWithEmailAndPassword(secondaryAuth, email, password);
+            const user = userCredential.user;
+
+            await setDoc(doc(db, "gebruikers", user.uid), {
+                uid: user.uid,
+                email: user.email,
+                role: role,
+                status: UserStatus.Active,
+                department: department || undefined,
+                createdAt: new Date().toISOString()
+            });
+
+            await signOut(secondaryAuth);
+            onUserAdded();
+            onClose();
+
+        } catch (err: any) {
+            console.error("Error adding user:", err);
+            if (err.code === 'auth/email-already-in-use') {
+                setError('Dit e-mailadres is al in gebruik.');
+            } else if (err.code === 'auth/weak-password') {
+                setError('Wachtwoord moet minimaal 6 tekens lang zijn.');
+            } else {
+                setError('Er is een fout opgetreden: ' + err.message);
+            }
+        } finally {
+            if (secondaryApp) {
+                await deleteApp(secondaryApp);
+            }
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50">
+            <div className="bg-white dark:bg-gray-800 p-8 rounded-lg shadow-2xl w-full max-w-md">
+                <h2 className="text-2xl font-bold mb-4 text-gray-900 dark:text-white">Nieuwe Medewerker</h2>
+                <form onSubmit={handleSubmit} className="space-y-4">
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">E-mail</label>
+                        <input type="email" value={email} onChange={e => setEmail(e.target.value)} required className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700 p-2" />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Wachtwoord</label>
+                        <input type="password" value={password} onChange={e => setPassword(e.target.value)} required className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700 p-2" />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Rol</label>
+                        <select value={role} onChange={e => setRole(e.target.value as UserRole)} className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700 p-2">
+                            {Object.values(UserRole).map(r => <option key={r} value={r}>{r}</option>)}
+                        </select>
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Afdeling (Optioneel)</label>
+                        <select value={department} onChange={e => setDepartment(e.target.value as Department)} className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700 p-2">
+                            <option value="">Geen</option>
+                            {Object.values(Department).map(d => <option key={d} value={d}>{d}</option>)}
+                        </select>
+                    </div>
+
+                    {error && <p className="text-red-500 text-sm">{error}</p>}
+
+                    <div className="flex justify-end gap-3 mt-6">
+                        <button type="button" onClick={onClose} disabled={loading} className="px-4 py-2 border rounded-md hover:bg-gray-100 dark:hover:bg-gray-700">Annuleren</button>
+                        <button type="submit" disabled={loading} className="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50">
+                            {loading ? 'Bezig...' : 'Toevoegen'}
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    );
+};
+
+// --- Edit User Modal ---
+interface EditUserModalProps {
+    user: UserProfile;
+    organizations: Organization[];
+    supervisors: Supervisor[];
+    onClose: () => void;
+    onSave: (uid: string, data: Partial<UserProfile>) => void;
+}
+
+const EditUserModal: React.FC<EditUserModalProps> = ({ user, organizations, supervisors, onClose, onSave }) => {
+    const [displayName, setDisplayName] = useState(user.displayName || '');
+    const [address, setAddress] = useState(user.address || '');
+    const [phone, setPhone] = useState(user.phone || '');
+    const [role, setRole] = useState(user.role);
+    const [department, setDepartment] = useState<Department | ''>(user.department || '');
+    const [status, setStatus] = useState(user.status);
+    const [organizationId, setOrganizationId] = useState(user.organizationId || '');
+    const [supervisorId, setSupervisorId] = useState(user.supervisorId || '');
+
+    // Filter supervisors based on selected organization
+    const filteredSupervisors = useMemo(() => {
+        if (!organizationId) return [];
+        return supervisors.filter(s => s.organizationId === organizationId);
+    }, [organizationId, supervisors]);
+
+    const handleSubmit = (e: React.FormEvent) => {
+        e.preventDefault();
+        onSave(user.uid, {
+            displayName,
+            address,
+            phone,
+            role,
+            department: department || undefined,
+            status,
+            organizationId: organizationId || undefined,
+            supervisorId: supervisorId || undefined
+        });
+        onClose();
+    };
+
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50">
+            <div className="bg-white dark:bg-gray-800 p-8 rounded-lg shadow-2xl w-full max-w-2xl h-auto max-h-[90vh] overflow-y-auto">
+                <div className="flex justify-between items-center mb-6">
+                    <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Medewerker Bewerken</h2>
+                    <button onClick={onClose} className="text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
+                        <XMarkIcon className="w-6 h-6" />
+                    </button>
+                </div>
+                
+                <form onSubmit={handleSubmit} className="space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="md:col-span-2">
+                             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Email</label>
+                             <input type="text" value={user.email} disabled className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-gray-100 dark:bg-gray-600 p-2 text-gray-500" />
+                        </div>
+                        
+                        <div className="md:col-span-2">
+                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Naam Medewerker</label>
+                            <input 
+                                type="text" 
+                                value={displayName} 
+                                onChange={e => setDisplayName(e.target.value)} 
+                                placeholder="Volledige naam"
+                                className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700 p-2" 
+                            />
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Telefoonnummer</label>
+                            <input 
+                                type="tel" 
+                                value={phone} 
+                                onChange={e => setPhone(e.target.value)} 
+                                placeholder="06 12345678"
+                                className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700 p-2" 
+                            />
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Rol</label>
+                            <select value={role} onChange={e => setRole(e.target.value as UserRole)} className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700 p-2">
+                                {Object.values(UserRole).map(r => <option key={r} value={r}>{r}</option>)}
+                            </select>
+                        </div>
+
+                        <div className="md:col-span-2">
+                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Adres</label>
+                            <input 
+                                type="text" 
+                                value={address} 
+                                onChange={e => setAddress(e.target.value)} 
+                                placeholder="Straatnaam 123, 1234AB Plaats"
+                                className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700 p-2" 
+                            />
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Afdeling</label>
+                            <select value={department} onChange={e => setDepartment(e.target.value as Department)} className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700 p-2">
+                                <option value="">Geen</option>
+                                {Object.values(Department).map(d => <option key={d} value={d}>{d}</option>)}
+                            </select>
+                        </div>
+
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Account Status</label>
+                            <select value={status} onChange={e => setStatus(e.target.value as UserStatus)} className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700 p-2">
+                                <option value={UserStatus.Active}>Actief (Toegang)</option>
+                                <option value={UserStatus.Inactive}>Inactief (Geen toegang)</option>
+                                <option value={UserStatus.Pending}>In afwachting</option>
+                            </select>
+                        </div>
+                        
+                        <div className="border-t border-gray-200 dark:border-gray-700 col-span-1 md:col-span-2 pt-4 mt-2">
+                             <h3 className="text-sm font-medium text-gray-900 dark:text-white mb-2">Organisatie & Begeleiding</h3>
+                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Organisatie</label>
+                                    <select value={organizationId} onChange={e => { setOrganizationId(e.target.value); setSupervisorId(''); }} className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700 p-2">
+                                        <option value="">Geen Organisatie</option>
+                                        {organizations.map(org => <option key={org.id} value={org.id}>{org.name}</option>)}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Begeleider</label>
+                                    <select value={supervisorId} onChange={e => setSupervisorId(e.target.value)} disabled={!organizationId} className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700 p-2 disabled:bg-gray-100 dark:disabled:bg-gray-600">
+                                        <option value="">Geen Begeleider</option>
+                                        {filteredSupervisors.map(sup => <option key={sup.id} value={sup.id}>{sup.name}</option>)}
+                                    </select>
+                                </div>
+                             </div>
+                        </div>
+                    </div>
+
+                    <div className="flex justify-end gap-3 mt-8 pt-4 border-t border-gray-200 dark:border-gray-700">
+                        <button type="button" onClick={onClose} className="px-4 py-2 border rounded-md hover:bg-gray-100 dark:hover:bg-gray-700">Annuleren</button>
+                        <button type="submit" className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700">
+                            Opslaan
+                        </button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    );
+};
+
+
 // --- Users View ---
 interface UsersViewProps {
     users: UserProfile[];
+    organizations: Organization[];
+    supervisors: Supervisor[];
     onUpdateUser: (uid: string, data: Partial<UserProfile>) => void;
     currentUserEmail: string;
 }
 
-const UsersView: React.FC<UsersViewProps> = ({ users, onUpdateUser, currentUserEmail }) => {
+const UsersView: React.FC<UsersViewProps> = ({ users, organizations, supervisors, onUpdateUser, currentUserEmail }) => {
+    const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+    const [editingUser, setEditingUser] = useState<UserProfile | null>(null);
+
+    const handleDeleteUser = async (e: React.MouseEvent, uid: string) => {
+        e.stopPropagation();
+        if (window.confirm("Weet u zeker dat u deze gebruiker wilt verwijderen?")) {
+            try {
+                await deleteDoc(doc(db, "gebruikers", uid));
+            } catch (error) {
+                console.error("Fout bij verwijderen gebruiker:", error);
+                alert("Kon gebruiker niet verwijderen.");
+            }
+        }
+    };
+    
+    const getOrgName = (id?: string) => organizations.find(o => o.id === id)?.name || '-';
+
     return (
         <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg">
-            <h2 className="text-3xl font-bold mb-6 text-gray-900 dark:text-white">Medewerkersbeheer</h2>
-            <div className="overflow-x-auto">
+            {isAddModalOpen && (
+                <AddUserModal 
+                    onClose={() => setIsAddModalOpen(false)} 
+                    onUserAdded={() => {}} 
+                />
+            )}
+
+            {editingUser && (
+                <EditUserModal 
+                    user={editingUser}
+                    organizations={organizations}
+                    supervisors={supervisors}
+                    onClose={() => setEditingUser(null)}
+                    onSave={onUpdateUser}
+                />
+            )}
+
+            <div className="flex justify-between items-center mb-6">
+                <h2 className="text-3xl font-bold text-gray-900 dark:text-white">Medewerkersbeheer</h2>
+                <button 
+                    onClick={() => setIsAddModalOpen(true)}
+                    className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700"
+                >
+                    <PlusIcon className="w-5 h-5" />
+                    Nieuwe Medewerker
+                </button>
+            </div>
+
+            <div className="overflow-hidden shadow ring-1 ring-black ring-opacity-5 rounded-lg">
                 <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
                     <thead className="bg-gray-50 dark:bg-gray-700">
                         <tr>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">E-mail</th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Naam / Email</th>
                             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Rol</th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Afdeling</th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Organisatie</th>
                             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Status</th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Acties</th>
                         </tr>
                     </thead>
                     <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
                         {users.map(user => {
                             const isCurrentUser = user.email === currentUserEmail;
                             return (
-                                <tr key={user.uid}>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">{user.email}</td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm">
-                                        <select
-                                            value={user.role}
-                                            onChange={(e) => onUpdateUser(user.uid, { role: e.target.value as UserRole })}
-                                            disabled={isCurrentUser}
-                                            className="block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700 disabled:bg-gray-200 dark:disabled:bg-gray-600"
-                                        >
-                                            {Object.values(UserRole).map(role => <option key={role} value={role}>{role}</option>)}
-                                        </select>
+                                <tr 
+                                    key={user.uid} 
+                                    className="hover:bg-gray-50 dark:hover:bg-gray-700 cursor-pointer transition-colors"
+                                    onClick={() => !isCurrentUser && setEditingUser(user)}
+                                >
+                                    <td className="px-6 py-4 whitespace-nowrap">
+                                        <div className="flex flex-col">
+                                            <span className="text-sm font-medium text-gray-900 dark:text-white">
+                                                {user.displayName || user.email}
+                                            </span>
+                                            {user.displayName && (
+                                                <span className="text-xs text-gray-500 dark:text-gray-400">{user.email}</span>
+                                            )}
+                                        </div>
                                     </td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm">
-                                        <select
-                                            value={user.department || ''}
-                                            onChange={(e) => onUpdateUser(user.uid, { department: e.target.value as Department })}
-                                            className="block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700"
-                                        >
-                                            <option value="">Geen</option>
-                                            {Object.values(Department).map(dept => <option key={dept} value={dept}>{dept}</option>)}
-                                        </select>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
+                                        {user.role} 
+                                        {user.department && <span className="ml-2 text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full">{user.department}</span>}
                                     </td>
-                                    <td className="px-6 py-4 whitespace-nowrap text-sm">
-                                        <select
-                                            value={user.status}
-                                            onChange={(e) => onUpdateUser(user.uid, { status: e.target.value as UserStatus })}
-                                            disabled={isCurrentUser}
-                                            className="block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700 disabled:bg-gray-200 dark:disabled:bg-gray-600"
-                                        >
-                                            {Object.values(UserStatus).map(status => <option key={status} value={status}>{status}</option>)}
-                                        </select>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-300">
+                                        {getOrgName(user.organizationId)}
+                                    </td>
+                                    <td className="px-6 py-4 whitespace-nowrap">
+                                         <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                                            user.status === UserStatus.Active ? 'bg-green-100 text-green-800' : 
+                                            user.status === UserStatus.Inactive ? 'bg-red-100 text-red-800' : 
+                                            'bg-yellow-100 text-yellow-800'
+                                        }`}>
+                                            {user.status === UserStatus.Active ? 'Actief' : user.status === UserStatus.Inactive ? 'Inactief' : 'In afwachting'}
+                                        </span>
+                                    </td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                        {!isCurrentUser ? (
+                                            <div className="flex gap-4">
+                                                <button className="text-blue-600 hover:text-blue-900 font-medium">Bewerken</button>
+                                                <button 
+                                                    onClick={(e) => handleDeleteUser(e, user.uid)}
+                                                    className="text-red-600 hover:text-red-900 dark:hover:text-red-400"
+                                                    title="Verwijder gebruiker"
+                                                >
+                                                    <TrashIcon className="w-5 h-5" />
+                                                </button>
+                                            </div>
+                                        ) : (
+                                            <span className="text-xs italic text-gray-400"> (Uzelf) </span>
+                                        )}
                                     </td>
                                 </tr>
                             );
@@ -277,9 +587,727 @@ const UsersView: React.FC<UsersViewProps> = ({ users, onUpdateUser, currentUserE
     );
 };
 
+// --- Organizations View ---
+const AddOrganizationModal = ({ onClose, onAdd, organizationToEdit }: { onClose: () => void, onAdd: (org: Organization) => void, organizationToEdit?: Organization }) => {
+    const [name, setName] = useState(organizationToEdit?.name || '');
+    const [address, setAddress] = useState(organizationToEdit?.address || '');
+    const [phone, setPhone] = useState(organizationToEdit?.phone || '');
+    const [logo, setLogo] = useState(organizationToEdit?.logo || '');
+
+    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (file) {
+            const reader = new FileReader();
+            reader.onloadend = () => {
+                setLogo(reader.result as string);
+            };
+            reader.readAsDataURL(file);
+        }
+    };
+
+    const handleSubmit = (e: React.FormEvent) => {
+        e.preventDefault();
+        onAdd({
+            id: organizationToEdit?.id || '', // ID handled by parent or Firestore
+            name,
+            address,
+            phone,
+            logo
+        });
+        onClose();
+    };
+
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50">
+            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl w-full max-w-md">
+                <h3 className="text-lg font-bold mb-4 text-gray-900 dark:text-white">{organizationToEdit ? 'Organisatie Wijzigen' : 'Organisatie Toevoegen'}</h3>
+                <form onSubmit={handleSubmit} className="space-y-4">
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Naam</label>
+                        <input required type="text" value={name} onChange={e => setName(e.target.value)} className="mt-1 block w-full border rounded p-2 dark:bg-gray-700 dark:border-gray-600" />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Adres</label>
+                        <input type="text" value={address} onChange={e => setAddress(e.target.value)} className="mt-1 block w-full border rounded p-2 dark:bg-gray-700 dark:border-gray-600" />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Telefoonnummer</label>
+                        <input type="text" value={phone} onChange={e => setPhone(e.target.value)} className="mt-1 block w-full border rounded p-2 dark:bg-gray-700 dark:border-gray-600" />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Logo</label>
+                        <input type="file" accept="image/*" onChange={handleFileChange} className="mt-1 block w-full text-sm text-gray-500 dark:text-gray-400 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100" />
+                        {logo && <img src={logo} alt="Preview" className="mt-2 h-16 object-contain" />}
+                    </div>
+                    <div className="flex justify-end gap-3 mt-6">
+                        <button type="button" onClick={onClose} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded">Annuleren</button>
+                        <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">Opslaan</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    );
+};
+
+const OrganizationsView = ({ organizations }: { organizations: Organization[] }) => {
+    const [isModalOpen, setIsModalOpen] = useState(false);
+    const [editingOrg, setEditingOrg] = useState<Organization | undefined>(undefined);
+
+    const handleSave = async (org: Organization) => {
+        try {
+            if (org.id) {
+                 await updateDoc(doc(db, "organisaties", org.id), { ...org });
+            } else {
+                 await addDoc(collection(db, "organisaties"), org);
+            }
+        } catch (e) {
+            console.error("Error saving organization", e);
+            alert("Fout bij opslaan organisatie");
+        }
+    };
+    
+    const handleDelete = async (id: string) => {
+        if(confirm("Weet u zeker dat u deze organisatie wilt verwijderen?")) {
+            await deleteDoc(doc(db, "organisaties", id));
+        }
+    }
+
+    return (
+        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg">
+             {isModalOpen && (
+                <AddOrganizationModal 
+                    onClose={() => { setIsModalOpen(false); setEditingOrg(undefined); }}
+                    onAdd={handleSave}
+                    organizationToEdit={editingOrg}
+                />
+            )}
+            <div className="flex justify-between items-center mb-6">
+                <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Organisaties</h2>
+                <button onClick={() => setIsModalOpen(true)} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
+                    <PlusIcon className="w-5 h-5"/> Nieuwe Organisatie Toevoegen
+                </button>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                {organizations.map(org => (
+                    <div key={org.id} className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 flex flex-col justify-between hover:shadow-md transition-shadow">
+                        <div>
+                            <div className="flex items-center justify-between mb-4">
+                                {org.logo ? <img src={org.logo} alt={org.name} className="h-12 w-auto object-contain" /> : <div className="h-12 w-12 bg-gray-100 rounded-full flex items-center justify-center text-gray-400">?</div>}
+                                <div className="flex gap-2">
+                                     <button onClick={() => { setEditingOrg(org); setIsModalOpen(true); }} className="text-blue-600 hover:text-blue-800 text-sm">Wijzigen</button>
+                                     <button onClick={() => handleDelete(org.id)} className="text-red-600 hover:text-red-800"><TrashIcon className="w-4 h-4"/></button>
+                                </div>
+                            </div>
+                            <h3 className="text-lg font-semibold text-gray-900 dark:text-white">{org.name}</h3>
+                            <p className="text-sm text-gray-600 dark:text-gray-300 mt-1">{org.address || 'Geen adres'}</p>
+                            <p className="text-sm text-gray-600 dark:text-gray-300">{org.phone || 'Geen telefoon'}</p>
+                        </div>
+                    </div>
+                ))}
+                {organizations.length === 0 && <p className="col-span-full text-center text-gray-500">Geen organisaties gevonden.</p>}
+            </div>
+        </div>
+    );
+};
+
+// --- Supervisors View ---
+const AddSupervisorModal = ({ onClose, onAdd, supervisorToEdit, organizations }: { onClose: () => void, onAdd: (sup: Supervisor) => void, supervisorToEdit?: Supervisor, organizations: Organization[] }) => {
+    const [name, setName] = useState(supervisorToEdit?.name || '');
+    const [email, setEmail] = useState(supervisorToEdit?.email || '');
+    const [phone, setPhone] = useState(supervisorToEdit?.phone || '');
+    const [organizationId, setOrganizationId] = useState(supervisorToEdit?.organizationId || '');
+
+    const handleSubmit = (e: React.FormEvent) => {
+        e.preventDefault();
+        onAdd({
+            id: supervisorToEdit?.id || '',
+            name,
+            email,
+            phone,
+            organizationId
+        });
+        onClose();
+    };
+
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50">
+            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl w-full max-w-md">
+                <h3 className="text-lg font-bold mb-4 text-gray-900 dark:text-white">{supervisorToEdit ? 'Begeleider Wijzigen' : 'Begeleider Toevoegen'}</h3>
+                <form onSubmit={handleSubmit} className="space-y-4">
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Naam</label>
+                        <input required type="text" value={name} onChange={e => setName(e.target.value)} className="mt-1 block w-full border rounded p-2 dark:bg-gray-700 dark:border-gray-600" />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Email</label>
+                        <input required type="email" value={email} onChange={e => setEmail(e.target.value)} className="mt-1 block w-full border rounded p-2 dark:bg-gray-700 dark:border-gray-600" />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Telefoon</label>
+                        <input type="text" value={phone} onChange={e => setPhone(e.target.value)} className="mt-1 block w-full border rounded p-2 dark:bg-gray-700 dark:border-gray-600" />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Organisatie</label>
+                         <select required value={organizationId} onChange={e => setOrganizationId(e.target.value)} className="mt-1 block w-full border rounded p-2 dark:bg-gray-700 dark:border-gray-600">
+                            <option value="">Selecteer Organisatie</option>
+                            {organizations.map(org => <option key={org.id} value={org.id}>{org.name}</option>)}
+                        </select>
+                    </div>
+                    <div className="flex justify-end gap-3 mt-6">
+                        <button type="button" onClick={onClose} className="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded">Annuleren</button>
+                        <button type="submit" className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">Opslaan</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    );
+};
+
+const SupervisorsView = ({ supervisors, organizations }: { supervisors: Supervisor[], organizations: Organization[] }) => {
+    const [isModalOpen, setIsModalOpen] = useState(false);
+    const [editingSup, setEditingSup] = useState<Supervisor | undefined>(undefined);
+
+    const handleSave = async (sup: Supervisor) => {
+        try {
+            if (sup.id) {
+                 await updateDoc(doc(db, "begeleiders", sup.id), { ...sup });
+            } else {
+                 await addDoc(collection(db, "begeleiders"), sup);
+            }
+        } catch (e) {
+            console.error("Error saving supervisor", e);
+            alert("Fout bij opslaan begeleider");
+        }
+    };
+
+    const handleDelete = async (id: string) => {
+        if(confirm("Weet u zeker dat u deze begeleider wilt verwijderen?")) {
+            await deleteDoc(doc(db, "begeleiders", id));
+        }
+    }
+
+    const getOrgName = (id: string) => organizations.find(o => o.id === id)?.name || 'Onbekend';
+
+    return (
+        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg">
+             {isModalOpen && (
+                <AddSupervisorModal 
+                    onClose={() => { setIsModalOpen(false); setEditingSup(undefined); }}
+                    onAdd={handleSave}
+                    supervisorToEdit={editingSup}
+                    organizations={organizations}
+                />
+            )}
+            <div className="flex justify-between items-center mb-6">
+                <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Begeleiders</h2>
+                <button onClick={() => setIsModalOpen(true)} className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
+                    <PlusIcon className="w-5 h-5"/> Nieuwe Begeleider
+                </button>
+            </div>
+            <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                    <thead className="bg-gray-50 dark:bg-gray-700">
+                        <tr>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Naam</th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Email</th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Telefoon</th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Organisatie</th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Acties</th>
+                        </tr>
+                    </thead>
+                    <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
+                        {supervisors.map(sup => (
+                            <tr key={sup.id}>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">{sup.name}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{sup.email}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{sup.phone}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{getOrgName(sup.organizationId)}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                     <div className="flex gap-4">
+                                        <button onClick={() => { setEditingSup(sup); setIsModalOpen(true); }} className="text-blue-600 hover:text-blue-900 font-medium">Bewerken</button>
+                                        <button onClick={() => handleDelete(sup.id)} className="text-red-600 hover:text-red-900"><TrashIcon className="w-5 h-5"/></button>
+                                     </div>
+                                </td>
+                            </tr>
+                        ))}
+                         {supervisors.length === 0 && (
+                            <tr><td colSpan={5} className="px-6 py-4 text-center text-gray-500">Geen begeleiders gevonden.</td></tr>
+                        )}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    );
+};
+
+// --- Missing Components and Helpers Implementation ---
+
+const generateGoogleCalendarUrl = (date: Date, order: Order, titlePrefix: string) => {
+    const startTime = date.toISOString().replace(/-|:|\.\d\d\d/g, "");
+    const endTime = new Date(date.getTime() + 60 * 60 * 1000).toISOString().replace(/-|:|\.\d\d\d/g, ""); // 1 hour duration
+    const title = encodeURIComponent(`${titlePrefix}: ${order.title} (${order.customer.name})`);
+    const details = encodeURIComponent(`Adres: ${order.customer.address}\nTel: ${order.customer.phone}\nOrder: ${order.orderNumber}`);
+    const location = encodeURIComponent(order.customer.address);
+    
+    return `https://www.google.com/calendar/render?action=TEMPLATE&text=${title}&dates=${startTime}/${endTime}&details=${details}&location=${location}&sf=true&output=xml`;
+};
+
+const Header = ({ activeTab, setActiveTab, userProfile }: { activeTab: AppTab, setActiveTab: (tab: AppTab) => void, userProfile: UserProfile }) => {
+    const [isMenuOpen, setIsMenuOpen] = useState(false);
+    
+    const tabs: { id: AppTab; label: string; roles?: UserRole[] }[] = [
+        { id: 'dashboard', label: 'Dashboard' },
+        { id: 'nieuwe-opdracht', label: 'Nieuwe Opdracht', roles: [UserRole.Beheerder, UserRole.Teamleider] },
+        { id: 'klanten', label: 'Klanten', roles: [UserRole.Beheerder, UserRole.Teamleider] },
+        { id: 'vervoer', label: 'Vervoer', roles: [UserRole.Beheerder, UserRole.Teamleider] },
+        { id: 'gebruikers', label: 'Gebruikers', roles: [UserRole.Beheerder] },
+        { id: 'organisaties', label: 'Organisaties', roles: [UserRole.Beheerder] },
+        { id: 'begeleiders', label: 'Begeleiders', roles: [UserRole.Beheerder] },
+        { id: 'mijn-account', label: 'Mijn Account' },
+    ];
+
+    const handleTabClick = (id: AppTab) => {
+        setActiveTab(id);
+        setIsMenuOpen(false);
+    };
+
+    return (
+        <header className="bg-white dark:bg-gray-800 shadow relative z-50">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div className="flex justify-between h-16">
+                    <div className="flex">
+                        <div className="flex-shrink-0 flex items-center">
+                            <h1 className="text-xl font-bold text-gray-900 dark:text-white">Nieuwe Nostalgie</h1>
+                        </div>
+                        <nav className="hidden sm:ml-6 sm:flex sm:space-x-8">
+                            {tabs.map(tab => {
+                                if (tab.roles && !tab.roles.includes(userProfile.role)) return null;
+                                return (
+                                    <button
+                                        key={tab.id}
+                                        onClick={() => setActiveTab(tab.id)}
+                                        className={`${
+                                            activeTab === tab.id
+                                                ? 'border-blue-500 text-gray-900 dark:text-white'
+                                                : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 dark:text-gray-300 dark:hover:text-white'
+                                        } inline-flex items-center px-1 pt-1 border-b-2 text-sm font-medium`}
+                                    >
+                                        {tab.label}
+                                    </button>
+                                );
+                            })}
+                        </nav>
+                    </div>
+                     <div className="hidden sm:flex items-center">
+                        <span className="text-sm text-gray-500 dark:text-gray-400 mr-4">{userProfile.email}</span>
+                        <button onClick={() => signOut(auth)} className="text-sm text-red-600 hover:text-red-800">Uitloggen</button>
+                    </div>
+                    {/* Mobile menu button */}
+                    <div className="-mr-2 flex items-center sm:hidden">
+                        <button
+                            onClick={() => setIsMenuOpen(!isMenuOpen)}
+                            className="inline-flex items-center justify-center p-2 rounded-md text-gray-400 hover:text-gray-500 hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-blue-500 dark:hover:bg-gray-700"
+                        >
+                            <span className="sr-only">Open hoofdmenu</span>
+                            {isMenuOpen ? (
+                                <XMarkIcon className="block h-6 w-6" />
+                            ) : (
+                                <MenuIcon className="block h-6 w-6" />
+                            )}
+                        </button>
+                    </div>
+                </div>
+            </div>
+            {/* Mobile menu, show/hide based on menu state */}
+            {isMenuOpen && (
+                 <div className="sm:hidden absolute top-16 left-0 right-0 bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 shadow-lg">
+                    <div className="pt-2 pb-3 space-y-1">
+                        {tabs.map(tab => {
+                            if (tab.roles && !tab.roles.includes(userProfile.role)) return null;
+                             return (
+                                <button
+                                    key={tab.id}
+                                    onClick={() => handleTabClick(tab.id)}
+                                    className={`${
+                                        activeTab === tab.id
+                                            ? 'bg-blue-50 border-blue-500 text-blue-700 dark:bg-gray-700 dark:text-blue-400'
+                                            : 'border-transparent text-gray-500 hover:bg-gray-50 hover:border-gray-300 hover:text-gray-700 dark:text-gray-300 dark:hover:bg-gray-700'
+                                    } block pl-3 pr-4 py-2 border-l-4 text-base font-medium w-full text-left`}
+                                >
+                                    {tab.label}
+                                </button>
+                            );
+                        })}
+                    </div>
+                    <div className="pt-4 pb-4 border-t border-gray-200 dark:border-gray-700">
+                        <div className="flex items-center px-4">
+                            <div className="ml-3">
+                                <div className="text-base font-medium text-gray-800 dark:text-white">{userProfile.email}</div>
+                                <div className="text-sm font-medium text-gray-500 dark:text-gray-400">{userProfile.role}</div>
+                            </div>
+                        </div>
+                        <div className="mt-3 space-y-1">
+                            <button
+                                onClick={() => signOut(auth)}
+                                className="block px-4 py-2 text-base font-medium text-gray-500 hover:text-gray-800 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-700 w-full text-left"
+                            >
+                                Uitloggen
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </header>
+    );
+};
+
+const Dashboard = ({ orders, onUpdateFurnitureDepartment, userProfile, onUpdateFurniturePriority }: { 
+    orders: Order[], 
+    onUpdateFurnitureDepartment: (orderId: string, furnitureId: string, dept: Department) => void,
+    userProfile: UserProfile,
+    onUpdateFurniturePriority: (orderId: string, furnitureId: string, priority: number) => void
+}) => {
+    const filteredOrders = useMemo(() => {
+        if (userProfile.role === UserRole.Beheerder || userProfile.role === UserRole.Teamleider) {
+            return orders;
+        }
+        if (userProfile.department) {
+             return orders.filter(o => o.furniture.some(f => f.department === userProfile.department));
+        }
+        return orders;
+    }, [orders, userProfile]);
+
+    return (
+        <div className="space-y-6">
+            <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Opdrachten Dashboard</h2>
+            <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+                {filteredOrders.map(order => (
+                    <div key={order.orderNumber} className="bg-white dark:bg-gray-800 shadow rounded-lg p-6">
+                        <div className="flex justify-between items-start mb-4">
+                            <div>
+                                <h3 className="text-lg font-medium text-gray-900 dark:text-white">#{order.orderNumber} {order.title}</h3>
+                                <p className="text-sm text-gray-500 dark:text-gray-400">{order.customer.name}</p>
+                            </div>
+                            <span className={`px-2 py-1 text-xs rounded-full ${order.status === 'Actief' ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'}`}>
+                                {order.status}
+                            </span>
+                        </div>
+                        <div className="space-y-3">
+                            <p className="text-sm text-gray-600 dark:text-gray-300">Deadline: {new Date(order.deadline).toLocaleDateString()}</p>
+                            <div className="border-t pt-2 mt-2">
+                                <h4 className="text-sm font-medium mb-2 text-gray-900 dark:text-white">Meubels:</h4>
+                                <ul className="space-y-2">
+                                    {order.furniture.map(item => {
+                                        if (userProfile.role === UserRole.Medewerker && userProfile.department && item.department !== userProfile.department) {
+                                            return null;
+                                        }
+
+                                        return (
+                                            <li key={item.id} className="text-sm border p-2 rounded bg-gray-50 dark:bg-gray-700 dark:border-gray-600">
+                                                <div className="flex justify-between">
+                                                    <span className="font-medium text-gray-900 dark:text-white">{item.type}</span>
+                                                    <span className={`text-xs px-1 rounded ${DEPARTMENT_COLORS[item.department]}`}>{item.department}</span>
+                                                </div>
+                                                 <div className="mt-2 flex gap-1 flex-wrap">
+                                                     <select 
+                                                        value={item.department} 
+                                                        onChange={(e) => onUpdateFurnitureDepartment(order.orderNumber, item.id, e.target.value as Department)}
+                                                        className="block w-full text-xs rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-600 text-gray-900 dark:text-white"
+                                                     >
+                                                         {DEPARTMENT_ORDER.map(dept => (
+                                                             <option key={dept} value={dept}>{dept}</option>
+                                                         ))}
+                                                     </select>
+                                                 </div>
+                                            </li>
+                                        );
+                                    })}
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                ))}
+                {filteredOrders.length === 0 && <p className="col-span-full text-center text-gray-500">Geen opdrachten gevonden.</p>}
+            </div>
+        </div>
+    );
+};
+
+const NewOrderForm = ({ addOrder, setActiveTab }: { addOrder: (order: Order) => void, setActiveTab: (tab: AppTab) => void }) => {
+    const [title, setTitle] = useState('');
+    const [customerName, setCustomerName] = useState('');
+    const [customerEmail, setCustomerEmail] = useState('');
+    const [customerPhone, setCustomerPhone] = useState('');
+    const [customerAddress, setCustomerAddress] = useState('');
+    const [deadline, setDeadline] = useState('');
+    const [pickupDate, setPickupDate] = useState('');
+    const [furnitureItems, setFurnitureItems] = useState<FurnitureItem[]>([]);
+    
+    const [furnType, setFurnType] = useState('');
+    const [furnPrice, setFurnPrice] = useState(0);
+    const [furnTreatment, setFurnTreatment] = useState('');
+
+    const handleAddFurniture = () => {
+        if (!furnType) return;
+        const newItem: FurnitureItem = {
+            id: Date.now().toString(),
+            type: furnType,
+            price: furnPrice,
+            image: '',
+            treatment: furnTreatment,
+            department: Department.Ophalen, 
+            priority: 0
+        };
+        setFurnitureItems([...furnitureItems, newItem]);
+        setFurnType('');
+        setFurnPrice(0);
+        setFurnTreatment('');
+    };
+
+    const handleSubmit = (e: React.FormEvent) => {
+        e.preventDefault();
+        const newOrder: Order = {
+            orderNumber: Date.now().toString().slice(-6), 
+            title,
+            customer: {
+                customerNumber: Date.now().toString().slice(-4),
+                name: customerName,
+                address: customerAddress,
+                phone: customerPhone,
+                email: customerEmail
+            },
+            furniture: furnitureItems,
+            pickupDate: pickupDate || new Date().toISOString(),
+            deadline: deadline || new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+            deliveryCost: 0,
+            status: 'Actief'
+        };
+        addOrder(newOrder);
+        setActiveTab('dashboard');
+    };
+
+    return (
+        <div className="bg-white dark:bg-gray-800 shadow rounded-lg p-6 max-w-4xl mx-auto">
+            <h2 className="text-2xl font-bold mb-6 text-gray-900 dark:text-white">Nieuwe Opdracht</h2>
+            <form onSubmit={handleSubmit} className="space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <input required placeholder="Opdracht Titel" value={title} onChange={e => setTitle(e.target.value)} className="p-2 border rounded dark:bg-gray-700 dark:border-gray-600" />
+                    <input required placeholder="Klant Naam" value={customerName} onChange={e => setCustomerName(e.target.value)} className="p-2 border rounded dark:bg-gray-700 dark:border-gray-600" />
+                    <input required placeholder="E-mail" type="email" value={customerEmail} onChange={e => setCustomerEmail(e.target.value)} className="p-2 border rounded dark:bg-gray-700 dark:border-gray-600" />
+                    <input required placeholder="Telefoon" value={customerPhone} onChange={e => setCustomerPhone(e.target.value)} className="p-2 border rounded dark:bg-gray-700 dark:border-gray-600" />
+                    <input required placeholder="Adres" value={customerAddress} onChange={e => setCustomerAddress(e.target.value)} className="p-2 border rounded dark:bg-gray-700 dark:border-gray-600 md:col-span-2" />
+                    
+                    <div className="md:col-span-2 grid grid-cols-2 gap-4">
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Ophaaldatum</label>
+                            <input type="date" value={pickupDate} onChange={e => setPickupDate(e.target.value)} className="mt-1 block w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600" />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Deadline</label>
+                            <input type="date" value={deadline} onChange={e => setDeadline(e.target.value)} className="mt-1 block w-full p-2 border rounded dark:bg-gray-700 dark:border-gray-600" />
+                        </div>
+                    </div>
+                </div>
+
+                <div className="border-t pt-4">
+                    <h3 className="text-lg font-medium mb-3 text-gray-900 dark:text-white">Meubels toevoegen</h3>
+                    <div className="flex gap-2 mb-4">
+                        <input placeholder="Type (bijv. Kast)" value={furnType} onChange={e => setFurnType(e.target.value)} className="flex-1 p-2 border rounded dark:bg-gray-700 dark:border-gray-600" />
+                        <input placeholder="Prijs" type="number" value={furnPrice} onChange={e => setFurnPrice(Number(e.target.value))} className="w-24 p-2 border rounded dark:bg-gray-700 dark:border-gray-600" />
+                        <input placeholder="Behandeling" value={furnTreatment} onChange={e => setFurnTreatment(e.target.value)} className="flex-1 p-2 border rounded dark:bg-gray-700 dark:border-gray-600" />
+                        <button type="button" onClick={handleAddFurniture} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
+                            <PlusIcon className="w-5 h-5" />
+                        </button>
+                    </div>
+                    
+                    <ul className="space-y-2">
+                        {furnitureItems.map((item, idx) => (
+                            <li key={idx} className="flex justify-between items-center p-2 bg-gray-50 dark:bg-gray-700 rounded">
+                                <span className="text-gray-900 dark:text-white">{item.type} - €{item.price} - {item.treatment}</span>
+                                <button type="button" onClick={() => setFurnitureItems(furnitureItems.filter((_, i) => i !== idx))} className="text-red-500">
+                                    <TrashIcon className="w-4 h-4" />
+                                </button>
+                            </li>
+                        ))}
+                    </ul>
+                </div>
+
+                <div className="flex justify-end">
+                    <button type="submit" className="px-6 py-2 bg-green-600 text-white rounded hover:bg-green-700 font-medium">
+                        Opdracht Aanmaken
+                    </button>
+                </div>
+            </form>
+        </div>
+    );
+};
+
+const CustomersView = ({ orders }: { orders: Order[], onUpdateOrder: any }) => {
+    const customers = useMemo(() => {
+        const map = new Map();
+        orders.forEach(o => {
+            if (!map.has(o.customer.email)) {
+                map.set(o.customer.email, o.customer);
+            }
+        });
+        return Array.from(map.values());
+    }, [orders]);
+
+    return (
+        <div className="bg-white dark:bg-gray-800 shadow rounded-lg p-6">
+            <h2 className="text-2xl font-bold mb-4 text-gray-900 dark:text-white">Klantenbestand</h2>
+            <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                    <thead className="bg-gray-50 dark:bg-gray-700">
+                        <tr>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Naam</th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Email</th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Telefoon</th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Adres</th>
+                        </tr>
+                    </thead>
+                    <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
+                        {customers.map((c, idx) => (
+                            <tr key={idx}>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">{c.name}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{c.email}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{c.phone}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">{c.address}</td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    );
+};
+
+const TransportView = ({ orders, updateOrder }: { orders: Order[], updateOrder: (o: Order) => void }) => {
+    const pickupOrders = orders.filter(o => o.furniture.some(f => f.department === Department.Ophalen));
+    const deliveryOrders = orders.filter(o => o.furniture.every(f => f.department === Department.Bezorgen) && o.status !== 'Voltooid');
+
+    return (
+        <div className="space-y-8">
+            <div className="bg-white dark:bg-gray-800 shadow rounded-lg p-6">
+                <h2 className="text-xl font-bold mb-4 text-gray-900 dark:text-white">Op te halen</h2>
+                <ul>
+                    {pickupOrders.map(o => (
+                        <li key={o.orderNumber} className="border-b py-2 flex justify-between items-center dark:border-gray-700">
+                             <div>
+                                <span className="font-medium text-gray-900 dark:text-white">{o.customer.name}</span>
+                                <span className="ml-2 text-sm text-gray-500">{o.customer.address}</span>
+                                <div className="text-xs text-gray-400">Datum: {o.pickupDate}</div>
+                             </div>
+                             <button className="text-blue-600 hover:text-blue-800" onClick={() => window.open(generateGoogleCalendarUrl(new Date(o.pickupDate), o, 'Ophalen'), '_blank')}>
+                                 <CalendarIcon className="w-5 h-5"/>
+                             </button>
+                        </li>
+                    ))}
+                    {pickupOrders.length === 0 && <li className="text-gray-500">Geen ophaalopdrachten.</li>}
+                </ul>
+            </div>
+            
+            <div className="bg-white dark:bg-gray-800 shadow rounded-lg p-6">
+                <h2 className="text-xl font-bold mb-4 text-gray-900 dark:text-white">Te bezorgen</h2>
+                <ul>
+                    {deliveryOrders.map(o => (
+                        <li key={o.orderNumber} className="border-b py-2 flex justify-between items-center dark:border-gray-700">
+                             <div>
+                                <span className="font-medium text-gray-900 dark:text-white">{o.customer.name}</span>
+                                <span className="ml-2 text-sm text-gray-500">{o.customer.address}</span>
+                                <div className="text-xs text-gray-400">Deadline: {o.deadline}</div>
+                                {o.deliveryDate && <div className="text-xs text-green-600">Gepland: {new Date(o.deliveryDate).toLocaleString()}</div>}
+                             </div>
+                             <div className="flex gap-2">
+                                <button className="text-green-600 hover:text-green-800" onClick={() => updateOrder({...o, status: 'Voltooid'})}>
+                                    Voltooien
+                                </button>
+                             </div>
+                        </li>
+                    ))}
+                    {deliveryOrders.length === 0 && <li className="text-gray-500">Geen bezorgopdrachten.</li>}
+                </ul>
+            </div>
+        </div>
+    );
+};
+
+const MyAccountView = ({ userProfile }: { userProfile: UserProfile }) => {
+    return (
+        <div className="bg-white dark:bg-gray-800 shadow rounded-lg p-6 max-w-md mx-auto">
+            <h2 className="text-2xl font-bold mb-6 text-gray-900 dark:text-white">Mijn Account</h2>
+            <div className="space-y-4">
+                <div>
+                    <label className="block text-sm font-medium text-gray-500 dark:text-gray-400">Email</label>
+                    <p className="mt-1 text-lg font-medium text-gray-900 dark:text-white">{userProfile.email}</p>
+                </div>
+                <div>
+                    <label className="block text-sm font-medium text-gray-500 dark:text-gray-400">Rol</label>
+                    <p className="mt-1 text-lg font-medium text-gray-900 dark:text-white">{userProfile.role}</p>
+                </div>
+                 <div>
+                    <label className="block text-sm font-medium text-gray-500 dark:text-gray-400">Afdeling</label>
+                    <p className="mt-1 text-lg font-medium text-gray-900 dark:text-white">{userProfile.department || 'Geen'}</p>
+                </div>
+                 {userProfile.supervisorId && (
+                     <div>
+                        <label className="block text-sm font-medium text-gray-500 dark:text-gray-400">Begeleider</label>
+                        <p className="mt-1 text-lg font-medium text-gray-900 dark:text-white">
+                             {/* Note: We don't have supervisor names here directly, usually you'd lookup. 
+                                For now just showing ID or simple text to indicate connection */}
+                             (Gekoppeld aan begeleider)
+                        </p>
+                    </div>
+                 )}
+                <div>
+                    <label className="block text-sm font-medium text-gray-500 dark:text-gray-400">Status</label>
+                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${userProfile.status === UserStatus.Active ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>
+                        {userProfile.status}
+                    </span>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const ScheduleDeliveryModal = ({ order, onClose, onSchedule }: { order: Order, onClose: () => void, onSchedule: (order: Order, date: string, time: string) => void }) => {
+    const [date, setDate] = useState('');
+    const [time, setTime] = useState('');
+
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50">
+            <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-xl w-full max-w-md">
+                <h3 className="text-lg font-bold mb-4 text-gray-900 dark:text-white">Bezorging Inplannen</h3>
+                <p className="mb-4 text-sm text-gray-600 dark:text-gray-300">
+                    Order #{order.orderNumber} voor {order.customer.name} is klaar om bezorgd te worden.
+                </p>
+                <div className="space-y-4">
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Datum</label>
+                        <input type="date" value={date} onChange={e => setDate(e.target.value)} className="mt-1 block w-full border rounded p-2 dark:bg-gray-700 dark:border-gray-600" />
+                    </div>
+                    <div>
+                        <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">Tijd</label>
+                        <input type="time" value={time} onChange={e => setTime(e.target.value)} className="mt-1 block w-full border rounded p-2 dark:bg-gray-700 dark:border-gray-600" />
+                    </div>
+                </div>
+                <div className="mt-6 flex justify-end gap-3">
+                    <button onClick={onClose} className="px-4 py-2 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded">Later</button>
+                    <button onClick={() => onSchedule(order, date, time)} disabled={!date || !time} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50">Inplannen</button>
+                </div>
+            </div>
+        </div>
+    );
+};
 
 // --- Main App Component ---
-const PlannerApp = ({ userProfile, allUsers, onUpdateUser }: { userProfile: UserProfile, allUsers: UserProfile[], onUpdateUser: (uid: string, data: Partial<UserProfile>) => void }) => {
+const PlannerApp = ({ userProfile, allUsers, organizations, supervisors, onUpdateUser }: { 
+    userProfile: UserProfile, 
+    allUsers: UserProfile[], 
+    organizations: Organization[],
+    supervisors: Supervisor[],
+    onUpdateUser: (uid: string, data: Partial<UserProfile>) => void 
+}) => {
   const [orders, setOrders] = useState<Order[]>([]);
   const [loadingOrders, setLoadingOrders] = useState(true);
   const [activeTab, setActiveTab] = useState<AppTab>('dashboard');
@@ -390,7 +1418,11 @@ const PlannerApp = ({ userProfile, allUsers, onUpdateUser }: { userProfile: User
         return <TransportView orders={orders} updateOrder={updateOrder} />;
       case 'gebruikers':
         if (userProfile.role !== UserRole.Beheerder) return <p>Geen toegang</p>;
-        return <UsersView users={allUsers} onUpdateUser={onUpdateUser} currentUserEmail={userProfile.email} />;
+        return <UsersView users={allUsers} organizations={organizations} supervisors={supervisors} onUpdateUser={onUpdateUser} currentUserEmail={userProfile.email} />;
+      case 'organisaties':
+        return <OrganizationsView organizations={organizations} />;
+      case 'begeleiders':
+        return <SupervisorsView supervisors={supervisors} organizations={organizations} />;
       case 'mijn-account':
           return <MyAccountView userProfile={userProfile} />;
       default:
@@ -444,6 +1476,8 @@ export default function App() {
     const [user, setUser] = useState<User | null>(null);
     const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
     const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
+    const [organizations, setOrganizations] = useState<Organization[]>([]);
+    const [supervisors, setSupervisors] = useState<Supervisor[]>([]);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
@@ -452,7 +1486,12 @@ export default function App() {
                 setUser(currentUser);
                 if (currentUser) {
                     const userDocRef = doc(db, "gebruikers", currentUser.uid);
-                    const docSnap = await getDoc(userDocRef);
+                    let docSnap = await getDoc(userDocRef);
+
+                    if (!docSnap.exists()) {
+                         await new Promise(resolve => setTimeout(resolve, 500));
+                         docSnap = await getDoc(userDocRef);
+                    }
 
                     if (docSnap.exists()) {
                         setUserProfile(docSnap.data() as UserProfile);
@@ -487,11 +1526,36 @@ export default function App() {
             const unsubscribeUsers = onSnapshot(usersQuery, (snapshot) => {
                 const usersData: UserProfile[] = [];
                 snapshot.forEach(doc => usersData.push(doc.data() as UserProfile));
-                setAllUsers(usersData.sort((a, b) => (a.email > b.email) ? 1 : -1));
+                setAllUsers(usersData.sort((a, b) => {
+                     const emailA = a.email || "";
+                     const emailB = b.email || "";
+                     return emailA.localeCompare(emailB);
+                }));
             });
-            return () => unsubscribeUsers();
+
+            const orgsQuery = query(collection(db, "organisaties"));
+            const unsubscribeOrgs = onSnapshot(orgsQuery, (snapshot) => {
+                const orgsData: Organization[] = [];
+                snapshot.forEach(doc => orgsData.push({ id: doc.id, ...doc.data() } as Organization));
+                setOrganizations(orgsData);
+            });
+
+            const supsQuery = query(collection(db, "begeleiders"));
+            const unsubscribeSups = onSnapshot(supsQuery, (snapshot) => {
+                const supsData: Supervisor[] = [];
+                snapshot.forEach(doc => supsData.push({ id: doc.id, ...doc.data() } as Supervisor));
+                setSupervisors(supsData);
+            });
+
+            return () => {
+                unsubscribeUsers();
+                unsubscribeOrgs();
+                unsubscribeSups();
+            };
         } else {
             setAllUsers([]);
+            setOrganizations([]);
+            setSupervisors([]);
         }
     }, [userProfile]);
 
@@ -525,1213 +1589,5 @@ export default function App() {
         return <PendingApprovalScreen />;
     }
 
-    return <PlannerApp userProfile={userProfile} allUsers={allUsers} onUpdateUser={handleUpdateUser} />;
+    return <PlannerApp userProfile={userProfile} allUsers={allUsers} organizations={organizations} supervisors={supervisors} onUpdateUser={handleUpdateUser} />;
 }
-
-
-// --- Helper Functions ---
-const generateGoogleCalendarUrl = (startDateTime: Date, order: Order, type: 'Ophalen' | 'Bezorgen') => {
-    const endTime = new Date(startDateTime.getTime() + 60 * 60 * 1000); 
-    const toISOStringWithoutDashesAndColons = (date: Date) => date.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
-    
-    const gCalTitle = encodeURIComponent(`${type}: ${order.title} - ${order.customer.name}`);
-    const gCalDates = `${toISOStringWithoutDashesAndColons(startDateTime)}/${toISOStringWithoutDashesAndColons(endTime)}`;
-    const gCalDetails = encodeURIComponent(`Opdracht: ${order.title}\nKlant: ${order.customer.name}\nTelefoon: ${order.customer.phone}\n\nMeubels:\n${order.furniture.map(f => `- ${f.type}`).join('\n')}`);
-    const gCalLocation = encodeURIComponent(order.customer.address);
-    
-    return `https://www.google.com/calendar/render?action=TEMPLATE&text=${gCalTitle}&dates=${gCalDates}&details=${gCalDetails}&location=${gCalLocation}`;
-};
-
-// --- My Account View ---
-const MyAccountView: React.FC<{ userProfile: UserProfile }> = ({ userProfile }) => {
-    return (
-        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg max-w-lg mx-auto">
-            <h2 className="text-3xl font-bold mb-6 text-gray-900 dark:text-white border-b pb-4">Mijn Account</h2>
-            <div className="space-y-4 text-gray-700 dark:text-gray-300">
-                <div>
-                    <p className="text-sm font-medium text-gray-500 dark:text-gray-400">E-mailadres</p>
-                    <p className="text-lg">{userProfile.email}</p>
-                </div>
-                <div>
-                    <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Rol</p>
-                    <p className="text-lg">{userProfile.role}</p>
-                </div>
-                <div>
-                    <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Afdeling</p>
-                    <p className="text-lg">{userProfile.department || 'Niet toegewezen'}</p>
-                </div>
-                <div>
-                    <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Status</p>
-                    <span className={`px-3 py-1 text-sm font-semibold rounded-full ${userProfile.status === UserStatus.Active ? 'bg-green-100 text-green-800' : 'bg-yellow-100 text-yellow-800'}`}>
-                        {userProfile.status}
-                    </span>
-                </div>
-            </div>
-            <div className="mt-6 pt-4 border-t border-gray-200 dark:border-gray-700">
-                <p className="text-sm text-gray-500 dark:text-gray-400">
-                    Neem contact op met de beheerder (<a href={`mailto:${ADMIN_EMAIL}`} className="text-blue-600 hover:underline">{ADMIN_EMAIL}</a>) om uw gegevens te wijzigen.
-                </p>
-            </div>
-        </div>
-    );
-};
-
-
-// --- Header Component ---
-const Header: React.FC<{ activeTab: AppTab, setActiveTab: (tab: AppTab) => void, userProfile: UserProfile }> = ({ activeTab, setActiveTab, userProfile }) => {
-  // FIX: Added explicit return type to ensure correct type inference for tab.id
-  const getTabs = (): { id: AppTab; name: string }[] => {
-    if (userProfile.role === UserRole.Medewerker) {
-        return [
-            { id: 'dashboard', name: 'Dashboard' },
-            { id: 'mijn-account', name: 'Mijn Account' },
-        ];
-    }
-    
-    const allTabs: { id: AppTab; name: string }[] = [
-        { id: 'dashboard', name: 'Dashboard' },
-        { id: 'nieuwe-opdracht', name: 'Nieuwe Opdracht' },
-        { id: 'klanten', name: 'Klanten' },
-        { id: 'vervoer', name: 'Vervoer' },
-    ];
-
-    if (userProfile.role === UserRole.Beheerder) {
-        allTabs.push({ id: 'gebruikers', name: 'Medewerkers' });
-    }
-    allTabs.push({ id: 'mijn-account', name: 'Mijn Account' });
-    return allTabs;
-  };
-  const tabs = getTabs();
-  
-  const handleLogout = async () => {
-    try {
-        await signOut(auth);
-    } catch (error) {
-        console.error("Error signing out: ", error);
-    }
-  };
-
-  return (
-    <header className="bg-white dark:bg-gray-800 shadow-md non-printable">
-      <div className="container mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex justify-between items-center py-4">
-          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-            <span className="text-blue-600 dark:text-blue-400">Nieuwe Nostalgie</span> Planner
-          </h1>
-          <div className="flex items-center space-x-4">
-            <nav className="hidden md:flex space-x-4">
-              {tabs.map(tab => (
-                <button
-                  key={tab.id}
-                  onClick={() => setActiveTab(tab.id)}
-                  className={`px-3 py-2 rounded-md text-sm font-medium transition-colors ${
-                    activeTab === tab.id
-                      ? 'bg-blue-600 text-white'
-                      : 'text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
-                  }`}
-                >
-                  {tab.name}
-                </button>
-              ))}
-            </nav>
-             <button
-                onClick={handleLogout}
-                className="px-3 py-2 rounded-md text-sm font-medium transition-colors text-red-600 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900"
-              >
-                Uitloggen
-              </button>
-          </div>
-        </div>
-        <div className="md:hidden">
-            <select
-                onChange={(e) => setActiveTab(e.target.value as AppTab)}
-                value={activeTab}
-                className="w-full p-2 border rounded-md bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600 mb-2"
-            >
-                {tabs.map(tab => <option key={tab.id} value={tab.id}>{tab.name}</option>)}
-            </select>
-        </div>
-      </div>
-    </header>
-  );
-};
-
-
-// --- Dashboard/Kanban Component ---
-interface DashboardProps {
-  orders: Order[];
-  onUpdateFurnitureDepartment: (orderNumber: string, furnitureId: string, newDepartment: Department) => void;
-  userProfile: UserProfile;
-  onUpdateFurniturePriority: (orderNumber: string, furnitureId: string, newPriority: number) => void;
-}
-
-const Dashboard: React.FC<DashboardProps> = ({ orders, onUpdateFurnitureDepartment, userProfile, onUpdateFurniturePriority }) => {
-    const [isDragging, setIsDragging] = useState(false);
-    
-    const furnitureByDepartment = useMemo(() => {
-        const grouped: { [key in Department]?: (FurnitureItem & { order: Order })[] } = {};
-        orders.forEach(order => {
-            if (order.status === 'Actief') {
-                order.furniture.forEach(item => {
-                    if (!grouped[item.department]) {
-                        grouped[item.department] = [];
-                    }
-                    grouped[item.department]!.push({ ...item, order });
-                });
-            }
-        });
-
-        for (const department in grouped) {
-            if (grouped.hasOwnProperty(department)) {
-                grouped[department as Department]!.sort((a, b) => (a.priority || 0) - (b.priority || 0));
-            }
-        }
-
-        return grouped;
-    }, [orders]);
-
-    const departmentsToDisplay = useMemo(() => {
-        if (userProfile.role === UserRole.Medewerker && userProfile.department) {
-            return DEPARTMENT_ORDER.filter(dep => dep === userProfile.department);
-        }
-        return DEPARTMENT_ORDER;
-    }, [userProfile]);
-
-
-    return (
-        <div>
-            <h2 className="text-3xl font-bold mb-6 text-gray-900 dark:text-white">Workflow Dashboard</h2>
-            <div className={`grid gap-6 ${departmentsToDisplay.length === 1 ? 'grid-cols-1' : 'grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'}`}>
-                {departmentsToDisplay.map(department => (
-                    <KanbanColumn
-                        key={department}
-                        department={department}
-                        items={furnitureByDepartment[department] || []}
-                        onUpdateFurnitureDepartment={onUpdateFurnitureDepartment}
-                        userProfile={userProfile}
-                        isDragging={isDragging}
-                        setIsDragging={setIsDragging}
-                        onUpdateFurniturePriority={onUpdateFurniturePriority}
-                    />
-                ))}
-            </div>
-        </div>
-    );
-};
-
-interface DropZoneProps {
-    onDrop: (e: React.DragEvent) => void;
-    isVisible: boolean;
-}
-
-const DropZone: React.FC<DropZoneProps> = ({ onDrop, isVisible }) => {
-    const [show, setShow] = useState(false);
-
-    if (!isVisible) return null;
-
-    return (
-        <div
-            onDragEnter={(e) => { e.preventDefault(); setShow(true); }}
-            onDragLeave={(e) => { e.preventDefault(); setShow(false); }}
-            onDragOver={(e) => e.preventDefault()}
-            onDrop={(e) => { e.preventDefault(); setShow(false); onDrop(e); }}
-            className={`transition-all duration-200 ease-in-out ${show ? 'h-16 my-2 rounded-lg bg-blue-200 dark:bg-blue-800 bg-opacity-50' : 'h-2'}`}
-        />
-    );
-};
-
-
-interface KanbanColumnProps {
-    department: Department;
-    items: (FurnitureItem & { order: Order })[];
-    onUpdateFurnitureDepartment: (orderNumber: string, furnitureId: string, newDepartment: Department) => void;
-    userProfile: UserProfile;
-    isDragging: boolean;
-    setIsDragging: (isDragging: boolean) => void;
-    onUpdateFurniturePriority: (orderNumber: string, furnitureId: string, newPriority: number) => void;
-}
-
-const KanbanColumn: React.FC<KanbanColumnProps> = ({ department, items, onUpdateFurnitureDepartment, userProfile, isDragging, setIsDragging, onUpdateFurniturePriority }) => {
-    const colorClasses = DEPARTMENT_COLORS[department] || 'bg-gray-200 text-gray-800';
-    const canReorder = userProfile.role === UserRole.Beheerder;
-
-    const handleDrop = (e: React.DragEvent, dropIndex: number) => {
-        const data = JSON.parse(e.dataTransfer.getData('application/json'));
-        const { furnitureId, orderNumber, sourceDepartment } = data;
-
-        if (sourceDepartment !== department) {
-            // This logic is for reordering, not for moving between departments
-            return;
-        }
-
-        const itemsInColumn = items.filter(item => item.id !== furnitureId);
-        
-        const prevItem = itemsInColumn[dropIndex - 1];
-        const nextItem = itemsInColumn[dropIndex];
-
-        const prevPriority = prevItem ? (prevItem.priority || 0) : 0;
-        
-        let newPriority;
-        if (nextItem) {
-            newPriority = (prevPriority + (nextItem.priority || 0)) / 2;
-        } else {
-            newPriority = prevPriority + 1024;
-        }
-
-        onUpdateFurniturePriority(orderNumber, furnitureId, newPriority);
-    };
-
-    const handleMove = (currentIndex: number, direction: 'up' | 'down') => {
-        const currentItem = items[currentIndex];
-        let newPriority: number;
-
-        if (direction === 'up' && currentIndex > 0) {
-            const prevItem = items[currentIndex - 1];
-            const itemBeforePrev = items[currentIndex - 2];
-            const prevPriority = prevItem.priority || 0;
-            const beforePrevPriority = itemBeforePrev ? (itemBeforePrev.priority || 0) : 0;
-            newPriority = (prevPriority + beforePrevPriority) / 2;
-        } else if (direction === 'down' && currentIndex < items.length - 1) {
-            const nextItem = items[currentIndex + 1];
-            const itemAfterNext = items[currentIndex + 2];
-            const nextPriority = nextItem.priority || 0;
-            const afterNextPriority = itemAfterNext ? (itemAfterNext.priority || 0) : (nextPriority + 2048);
-            newPriority = (nextPriority + afterNextPriority) / 2;
-        } else {
-            return; // Cannot move
-        }
-
-        onUpdateFurniturePriority(currentItem.order.orderNumber, currentItem.id, newPriority);
-    };
-
-    return (
-        <div className={`rounded-lg p-4 ${colorClasses.split(' ')[0]} bg-opacity-40 min-h-[200px]`}>
-            <h3 className={`font-bold text-lg mb-4 p-2 rounded-md ${colorClasses.split(' ')[0]} ${colorClasses.split(' ')[1]}`}>
-                {department} ({items.length})
-            </h3>
-            <div className="space-y-4">
-                {canReorder && <DropZone isVisible={isDragging} onDrop={(e) => handleDrop(e, 0)} />}
-                {items.map((item, index) => (
-                    <React.Fragment key={item.id}>
-                        <KanbanCard 
-                            item={item} 
-                            onUpdateFurnitureDepartment={onUpdateFurnitureDepartment} 
-                            userProfile={userProfile}
-                            isDraggable={canReorder}
-                            onDragStart={(e) => {
-                                e.dataTransfer.setData('application/json', JSON.stringify({
-                                    furnitureId: item.id,
-                                    orderNumber: item.order.orderNumber,
-                                    sourceDepartment: item.department
-                                }));
-                                e.dataTransfer.effectAllowed = 'move';
-                                setIsDragging(true);
-                            }}
-                            onDragEnd={() => setIsDragging(false)}
-                            onMoveUp={() => handleMove(index, 'up')}
-                            onMoveDown={() => handleMove(index, 'down')}
-                            isFirst={index === 0}
-                            isLast={index === items.length - 1}
-                        />
-                        {canReorder && <DropZone isVisible={isDragging} onDrop={(e) => handleDrop(e, index + 1)} />}
-                    </React.Fragment>
-                ))}
-            </div>
-        </div>
-    );
-};
-
-const getDeadlineColor = (pickupDate: string, deadline: string): string => {
-    const now = new Date();
-    const pickup = new Date(pickupDate);
-    const dead = new Date(deadline);
-    
-    if (!pickupDate || !deadline) return 'border-gray-300';
-
-    const threeDays = 3 * 24 * 60 * 60 * 1000;
-    
-    if (now.getTime() - pickup.getTime() <= threeDays) {
-        return 'border-green-500'; // First 3 days
-    } else if (dead.getTime() - now.getTime() <= threeDays) {
-        return 'border-red-500'; // Last 3 days
-    } else {
-        return 'border-orange-500'; // Middle period
-    }
-};
-
-interface KanbanCardProps {
-    item: FurnitureItem & { order: Order };
-    onUpdateFurnitureDepartment: (orderNumber: string, furnitureId: string, newDepartment: Department) => void;
-    userProfile: UserProfile;
-    isDraggable?: boolean;
-    onDragStart?: (e: React.DragEvent) => void;
-    onDragEnd?: (e: React.DragEvent) => void;
-    onMoveUp?: () => void;
-    onMoveDown?: () => void;
-    isFirst?: boolean;
-    isLast?: boolean;
-}
-
-const KanbanCard: React.FC<KanbanCardProps> = ({ item, onUpdateFurnitureDepartment, userProfile, isDraggable, onDragStart, onDragEnd, onMoveUp, onMoveDown, isFirst, isLast }) => {
-    const deadlineColor = getDeadlineColor(item.order.pickupDate, item.order.deadline);
-
-    const handleDepartmentChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-        onUpdateFurnitureDepartment(item.order.orderNumber, item.id, e.target.value as Department);
-    };
-
-    const canMoveTask = userProfile.role !== UserRole.Medewerker;
-    const canReorder = userProfile.role === UserRole.Beheerder;
-
-    return (
-        <div 
-            draggable={isDraggable}
-            onDragStart={onDragStart}
-            onDragEnd={onDragEnd}
-            className={`bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md border-l-4 ${deadlineColor} ${isDraggable ? 'cursor-grab' : ''}`}
-        >
-            {item.image && (
-                <img src={item.image} alt={item.type} className="w-full h-32 object-cover rounded-md mb-4" />
-            )}
-            <p className="font-bold text-gray-900 dark:text-white">{item.type}</p>
-            <p className="text-sm text-gray-600 dark:text-gray-400 mt-1 italic">"{item.treatment}"</p>
-            <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">Opdracht: #{item.order.orderNumber}</p>
-            <p className="text-sm text-gray-500 dark:text-gray-400">Klant: {item.order.customer.name} {item.order.customer.customerNumber && `(#${item.order.customer.customerNumber})`}</p>
-            
-            <div className="mt-4 flex justify-between items-end">
-                <div>
-                    <label htmlFor={`dept-${item.id}`} className="block text-sm font-medium text-gray-700 dark:text-gray-300">
-                        {canMoveTask ? 'Verplaats naar:' : 'Huidige afdeling:'}
-                    </label>
-                    <select
-                        id={`dept-${item.id}`}
-                        value={item.department}
-                        onChange={handleDepartmentChange}
-                        disabled={!canMoveTask}
-                        className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 dark:border-gray-600 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-md bg-white dark:bg-gray-700 disabled:bg-gray-200 dark:disabled:bg-gray-600 disabled:text-gray-500"
-                    >
-                        {DEPARTMENT_ORDER.map(dept => (
-                            <option key={dept} value={dept}>{dept}</option>
-                        ))}
-                    </select>
-                </div>
-                {canReorder && (
-                    <div className="flex items-center space-x-1">
-                        <button
-                            onClick={onMoveUp}
-                            disabled={isFirst}
-                            aria-label="Verplaats omhoog"
-                            className="p-2 rounded-full text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed"
-                        >
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M5 15l7-7 7 7" />
-                            </svg>
-                        </button>
-                        <button
-                            onClick={onMoveDown}
-                            disabled={isLast}
-                            aria-label="Verplaats omlaag"
-                            className="p-2 rounded-full text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 disabled:opacity-30 disabled:cursor-not-allowed"
-                        >
-                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                                <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
-                            </svg>
-                        </button>
-                    </div>
-                )}
-            </div>
-        </div>
-    );
-};
-
-
-// --- New Order Form Component ---
-interface NewOrderFormProps {
-    addOrder: (order: Order) => void;
-    setActiveTab: (tab: AppTab) => void;
-}
-const NewOrderForm: React.FC<NewOrderFormProps> = ({ addOrder, setActiveTab }) => {
-    const [title, setTitle] = useState('');
-    const [customer, setCustomer] = useState<Customer>({ name: '', address: '', phone: '', email: '', customerNumber: '' });
-    const [pickupDate, setPickupDate] = useState('');
-    const [pickupTime, setPickupTime] = useState('');
-    const [deliveryCost, setDeliveryCost] = useState(0);
-    const [furniture, setFurniture] = useState<Omit<FurnitureItem, 'id' | 'department' | 'priority'>[]>([{ type: '', price: 0, image: '', treatment: '' }]);
-
-    const handleAddFurniture = () => {
-        setFurniture([...furniture, { type: '', price: 0, image: '', treatment: '' }]);
-    };
-
-    const handleRemoveFurniture = (index: number) => {
-        setFurniture(furniture.filter((_, i) => i !== index));
-    };
-
-    const handleFurnitureChange = (index: number, field: keyof Omit<FurnitureItem, 'id' | 'department' | 'priority'>, value: string | number) => {
-        const newFurniture = [...furniture];
-        (newFurniture[index] as any)[field] = value;
-        setFurniture(newFurniture);
-    };
-
-    const handleImageUpload = (index: number, e: React.ChangeEvent<HTMLInputElement>) => {
-        if (e.target.files && e.target.files[0]) {
-            const reader = new FileReader();
-            reader.onloadend = () => {
-                handleFurnitureChange(index, 'image', reader.result as string);
-            };
-            reader.readAsDataURL(e.target.files[0]);
-        }
-    };
-
-    const handleSubmit = async (e: React.FormEvent) => {
-        e.preventDefault();
-        if(!customer.phone || customer.phone.length < 5) {
-            alert("Telefoonnummer is ongeldig of te kort.");
-            return;
-        }
-
-        const customerNumber = customer.phone.slice(-5);
-        const customerData: Customer = { ...customer, customerNumber };
-        
-        const counterRef = doc(db, "counters", "orderCounter");
-        let newOrderNumberStr: string;
-
-        try {
-            const newOrderNumber = await runTransaction(db, async (transaction) => {
-                const counterDoc = await transaction.get(counterRef);
-                let lastNumber = 20250074; // Start one below the first desired number
-                if (counterDoc.exists()) {
-                    lastNumber = counterDoc.data().lastOrderNumber;
-                }
-                const nextNumber = lastNumber + 1;
-                transaction.set(counterRef, { lastOrderNumber: nextNumber });
-                return nextNumber;
-            });
-            newOrderNumberStr = String(newOrderNumber);
-        } catch (error) {
-            console.error("Transaction for new order number failed: ", error);
-            alert("Kon geen uniek opdrachtnummer genereren. Probeer het later opnieuw.");
-            return;
-        }
-
-
-        const fullPickupDate = new Date(`${pickupDate}T${pickupTime}`);
-        const deadline = new Date(fullPickupDate.getTime() + 14 * 24 * 60 * 60 * 1000);
-
-        const newOrder: Order = {
-            orderNumber: newOrderNumberStr,
-            title,
-            customer: customerData,
-            pickupDate: fullPickupDate.toISOString(),
-            deadline: deadline.toISOString(),
-            deliveryCost,
-            furniture: furniture.map((f, index) => ({
-                ...f,
-                id: `${newOrderNumberStr}-${Math.random().toString(36).substr(2, 9)}`,
-                department: Department.Ophalen,
-                priority: (index + 1) * 1024,
-            })),
-            status: 'Actief',
-        };
-
-        await addOrder(newOrder);
-        
-        const calendarUrl = generateGoogleCalendarUrl(fullPickupDate, newOrder, 'Ophalen');
-        window.open(calendarUrl, '_blank');
-        
-        setActiveTab('dashboard');
-    };
-
-    return (
-        <form onSubmit={handleSubmit} className="space-y-8 bg-white dark:bg-gray-800 p-8 rounded-lg shadow-lg">
-            <h2 className="text-3xl font-bold text-gray-900 dark:text-white border-b pb-4">Nieuwe Opdracht Aanmaken</h2>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div>
-                    <label htmlFor="title" className="block text-sm font-medium text-gray-700 dark:text-gray-300">Titel</label>
-                    <input type="text" id="title" value={title} onChange={e => setTitle(e.target.value)} required className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm bg-white dark:bg-gray-700"/>
-                </div>
-            </div>
-
-            <fieldset className="border p-4 rounded-md">
-                <legend className="text-xl font-semibold px-2">Klantgegevens</legend>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mt-4">
-                    <input type="text" placeholder="Naam" value={customer.name} onChange={e => setCustomer({...customer, name: e.target.value})} required className="block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700"/>
-                    <input type="text" placeholder="Adres" value={customer.address} onChange={e => setCustomer({...customer, address: e.target.value})} required className="block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700"/>
-                    <input type="tel" placeholder="Telefoonnummer" value={customer.phone} onChange={e => setCustomer({...customer, phone: e.target.value})} required className="block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700"/>
-                    <input type="email" placeholder="E-mail" value={customer.email} onChange={e => setCustomer({...customer, email: e.target.value})} className="block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700"/>
-                </div>
-            </fieldset>
-
-             <fieldset className="border p-4 rounded-md">
-                <legend className="text-xl font-semibold px-2">Planning & Kosten</legend>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-4">
-                    <div>
-                        <label htmlFor="pickupDate" className="block text-sm font-medium">Ophaaldatum</label>
-                        <input type="date" id="pickupDate" value={pickupDate} onChange={e => setPickupDate(e.target.value)} required className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700"/>
-                    </div>
-                    <div>
-                        <label htmlFor="pickupTime" className="block text-sm font-medium">Ophaaltijd</label>
-                        <input type="time" id="pickupTime" value={pickupTime} onChange={e => setPickupTime(e.target.value)} required className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700"/>
-                    </div>
-                     <div>
-                        <label htmlFor="deliveryCost" className="block text-sm font-medium">Bezorgkosten (€)</label>
-                        <input type="number" id="deliveryCost" value={deliveryCost} onChange={e => setDeliveryCost(parseFloat(e.target.value) || 0)} className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700" />
-                    </div>
-                </div>
-             </fieldset>
-            
-            <div>
-                <h3 className="text-xl font-semibold mb-4">Meubels</h3>
-                {furniture.map((item, index) => (
-                    <div key={index} className="border p-4 rounded-md mb-4 relative bg-gray-50 dark:bg-gray-700">
-                        <button type="button" onClick={() => handleRemoveFurniture(index)} className="absolute top-2 right-2 text-red-500 hover:text-red-700">
-                            <TrashIcon className="w-5 h-5" />
-                        </button>
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                            <input type="text" placeholder="Soort meubel" value={item.type} onChange={e => handleFurnitureChange(index, 'type', e.target.value)} required className="block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-800"/>
-                            <input type="number" placeholder="Prijs" value={item.price} onChange={e => handleFurnitureChange(index, 'price', parseFloat(e.target.value) || 0)} required className="block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-800"/>
-                            <textarea placeholder="Behandeling" value={item.treatment} onChange={e => handleFurnitureChange(index, 'treatment', e.target.value)} required className="md:col-span-2 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-800"/>
-                            <div>
-                                <label className="block text-sm font-medium">Afbeelding</label>
-                                <input type="file" accept="image/*" onChange={e => handleImageUpload(index, e)} className="mt-1 block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"/>
-                                {item.image && <img src={item.image} alt="preview" className="mt-2 h-20 w-20 object-cover rounded"/>}
-                            </div>
-                        </div>
-                    </div>
-                ))}
-                <button type="button" onClick={handleAddFurniture} className="mt-2 flex items-center gap-2 px-4 py-2 border border-transparent text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700">
-                    <PlusIcon className="w-5 h-5"/> Meubel Toevoegen
-                </button>
-            </div>
-
-            <div className="flex justify-end">
-                <button type="submit" className="px-6 py-3 border border-transparent text-base font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700">
-                    Opdracht Aanmaken & Ophalen Inplannen
-                </button>
-            </div>
-        </form>
-    );
-};
-
-// --- Customers View ---
-interface CustomersViewProps {
-    orders: Order[];
-    onUpdateOrder: (order: Order) => void;
-}
-
-const CustomersView: React.FC<CustomersViewProps> = ({ orders, onUpdateOrder }) => {
-    const [searchTerm, setSearchTerm] = useState('');
-    const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
-
-    const filteredOrders = useMemo(() => {
-        if (!searchTerm) return orders;
-        const lowercasedFilter = searchTerm.toLowerCase();
-        return orders.filter(order =>
-            order.customer.name.toLowerCase().includes(lowercasedFilter) ||
-            order.orderNumber.includes(lowercasedFilter) ||
-            order.customer.address.toLowerCase().includes(lowercasedFilter) ||
-            order.customer.phone.replace(/\s/g, '').includes(lowercasedFilter.replace(/\s/g, ''))
-        );
-    }, [orders, searchTerm]);
-
-    const exportToCsv = (ordersToExport: Order[]) => {
-        const headers = [
-            'Opdrachtnummer',
-            'Klantnummer',
-            'Klantnaam',
-            'Adres',
-            'Telefoon',
-            'Email',
-            'Ophaaldatum',
-            'Meubel Soort',
-            'Behandeling',
-            'Prijs Meubel',
-            'Status Opdracht'
-        ];
-
-        const escapeCsvField = (field: any): string => {
-            const str = String(field ?? '');
-            if (str.includes(',') || str.includes('"') || str.includes('\n')) {
-                return `"${str.replace(/"/g, '""')}"`;
-            }
-            return str;
-        };
-        
-        const rows = ordersToExport.flatMap(order => 
-            order.furniture.map(item => [
-                order.orderNumber,
-                order.customer.customerNumber,
-                order.customer.name,
-                order.customer.address,
-                order.customer.phone,
-                order.customer.email,
-                new Date(order.pickupDate).toLocaleDateString('nl-NL'),
-                item.type,
-                item.treatment,
-                item.price.toFixed(2),
-                order.status
-            ].map(escapeCsvField))
-        );
-
-        const csvContent = [
-            headers.join(','),
-            ...rows.map(row => row.join(','))
-        ].join('\n');
-
-        const blob = new Blob([`\uFEFF${csvContent}`], { type: 'text/csv;charset=utf-8;' }); // \uFEFF for BOM
-        const link = document.createElement('a');
-        const url = URL.createObjectURL(blob);
-        link.setAttribute('href', url);
-        link.setAttribute('download', 'klantgegevens_nieuwe_nostalgie.csv');
-        link.style.visibility = 'hidden';
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-    };
-
-
-    if (selectedOrder) {
-        return <CustomerDetails order={selectedOrder} onBack={() => setSelectedOrder(null)} onUpdateOrder={onUpdateOrder} />;
-    }
-
-    return (
-        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg">
-            <div className="flex justify-between items-center mb-6 flex-wrap gap-4">
-                <h2 className="text-3xl font-bold text-gray-900 dark:text-white">Klantenoverzicht</h2>
-                <button 
-                    onClick={() => exportToCsv(orders)} 
-                    className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700"
-                >
-                    <DownloadIcon className="w-5 h-5" />
-                    Exporteer Klantgegevens
-                </button>
-            </div>
-
-            <input
-                type="text"
-                placeholder="Zoek op naam, adres, tel. of opdrachtnummer..."
-                value={searchTerm}
-                onChange={e => setSearchTerm(e.target.value)}
-                className="w-full p-3 mb-6 border rounded-md bg-white dark:bg-gray-700 border-gray-300 dark:border-gray-600"
-            />
-            <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-                    <thead className="bg-gray-50 dark:bg-gray-700">
-                        <tr>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Opdrachtnr.</th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Klantnaam</th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Telefoon</th>
-                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">Status</th>
-                        </tr>
-                    </thead>
-                    <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-                        {filteredOrders.map(order => (
-                            <tr key={order.orderNumber} onClick={() => setSelectedOrder(order)} className="hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer">
-                                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">#{order.orderNumber}</td>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm">{order.customer.name}</td>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm">{order.customer.phone}</td>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm">
-                                    <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${order.status === 'Actief' ? 'bg-yellow-100 text-yellow-800' : 'bg-green-100 text-green-800'}`}>
-                                        {order.status}
-                                    </span>
-                                </td>
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    );
-};
-
-// --- Customer Details ---
-interface CustomerDetailsProps {
-    order: Order;
-    onBack: () => void;
-    onUpdateOrder: (order: Order) => void;
-}
-const CustomerDetails: React.FC<CustomerDetailsProps> = ({ order, onBack, onUpdateOrder }) => {
-    const tasksReady = order.furniture.filter(f => f.department === Department.Bezorgen).length;
-    const totalTasks = order.furniture.length;
-
-    return (
-        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg">
-            <button onClick={onBack} className="mb-4 text-blue-600 dark:text-blue-400 hover:underline non-printable">&larr; Terug naar overzicht</button>
-            <div className="flex justify-between items-start">
-                <div>
-                    <h2 className="text-3xl font-bold text-gray-900 dark:text-white">{order.customer.name}</h2>
-                    <p className="text-gray-500 dark:text-gray-400">Opdracht #{order.orderNumber} - {order.title}</p>
-                </div>
-                <div className="text-right">
-                    <p className="font-semibold text-lg">{`${tasksReady} / ${totalTasks}`}</p>
-                    <p className="text-sm text-gray-500 dark:text-gray-400">taken klaar voor bezorging</p>
-                </div>
-            </div>
-            <div className="mt-6 border-t pt-6">
-                <h3 className="text-xl font-semibold mb-4">Meubels in Opdracht</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    {order.furniture.map(item => (
-                        <div key={item.id} className="border rounded-lg overflow-hidden shadow-sm">
-                            <img src={item.image} alt={item.type} className="w-full h-48 object-cover" />
-                            <div className="p-4">
-                                <h4 className="font-bold">{item.type}</h4>
-                                <p className="text-sm text-gray-600 dark:text-gray-300">{item.treatment}</p>
-                                <p className="font-semibold mt-2">€{item.price.toFixed(2)}</p>
-                                <p className={`mt-2 text-sm font-medium p-1 rounded-md inline-block ${DEPARTMENT_COLORS[item.department]}`}>
-                                    {item.department}
-                                </p>
-                            </div>
-                        </div>
-                    ))}
-                </div>
-            </div>
-        </div>
-    );
-};
-
-
-// --- Transport View ---
-const TransportView: React.FC<{ orders: Order[], updateOrder: (order: Order) => void }> = ({ orders, updateOrder }) => {
-    const [transportTab, setTransportTab] = useState<'planning' | 'facturen'>('planning');
-    const [selectedDate, setSelectedDate] = useState<string | null>(null);
-
-    const ordersReadyForDelivery = orders.filter(o => 
-        o.furniture.every(f => f.department === Department.Bezorgen) && o.status === 'Actief'
-    );
-
-    const renderPlanningContent = () => {
-        if (selectedDate) {
-            return <TransportDayPlanner 
-                        date={selectedDate} 
-                        orders={orders} 
-                        onBack={() => setSelectedDate(null)} 
-                    />;
-        }
-        return <TransportKanbanView orders={orders} onSelectDate={setSelectedDate} />;
-    };
-
-    return (
-        <div>
-            <div className="mb-6 border-b border-gray-200 dark:border-gray-700 non-printable">
-                <nav className="-mb-px flex space-x-8" aria-label="Tabs">
-                    <button
-                        onClick={() => setTransportTab('planning')}
-                        className={`whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm ${transportTab === 'planning' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
-                    >
-                        Routeplanning
-                    </button>
-                    <button
-                        onClick={() => setTransportTab('facturen')}
-                        className={`whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm ${transportTab === 'facturen' ? 'border-blue-500 text-blue-600' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'}`}
-                    >
-                        Facturen ({ordersReadyForDelivery.length})
-                    </button>
-                </nav>
-            </div>
-            {transportTab === 'planning' ? renderPlanningContent() : <InvoiceList orders={ordersReadyForDelivery} updateOrder={updateOrder} />}
-        </div>
-    );
-};
-
-
-// --- Transport Kanban View ---
-const TransportKanbanView: React.FC<{orders: Order[], onSelectDate: (date: string) => void}> = ({ orders, onSelectDate }) => {
-    const transportDays = useMemo(() => {
-        const dates = new Map<string, { pickups: number, deliveries: number }>();
-        
-        orders.forEach(order => {
-            if (order.status !== 'Actief') return;
-
-            const pickupDate = new Date(order.pickupDate).toISOString().split('T')[0];
-            if (!dates.has(pickupDate)) dates.set(pickupDate, { pickups: 0, deliveries: 0 });
-            dates.get(pickupDate)!.pickups += 1;
-
-            if (order.deliveryDate) {
-                const deliveryDate = new Date(order.deliveryDate).toISOString().split('T')[0];
-                if (!dates.has(deliveryDate)) dates.set(deliveryDate, { pickups: 0, deliveries: 0 });
-                dates.get(deliveryDate)!.deliveries += 1;
-            }
-        });
-
-        return Array.from(dates.entries())
-            .map(([date, counts]) => ({ date, ...counts }))
-            .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-
-    }, [orders]);
-
-    return (
-        <div>
-            <h2 className="text-2xl font-bold mb-4">Transport Dagen</h2>
-            <div className="flex flex-col space-y-4">
-                {transportDays.map(({ date, pickups, deliveries }) => (
-                    <div 
-                        key={date} 
-                        onClick={() => onSelectDate(date)}
-                        className="w-full bg-white dark:bg-gray-800 rounded-lg shadow-md p-4 cursor-pointer hover:shadow-xl transition-shadow"
-                    >
-                        <h3 className="font-bold text-lg text-gray-900 dark:text-white">
-                            {new Date(date).toLocaleDateString('nl-NL', { weekday: 'long', day: 'numeric', month: 'long' })}
-                        </h3>
-                        <div className="mt-4 space-y-2">
-                            {pickups > 0 && <p className="text-sm"><span className="font-semibold text-purple-600 dark:text-purple-400">{pickups}</span> Ophaalmoment(en)</p>}
-                            {deliveries > 0 && <p className="text-sm"><span className="font-semibold text-green-600 dark:text-green-400">{deliveries}</span> Bezorging(en)</p>}
-                        </div>
-                    </div>
-                ))}
-            </div>
-        </div>
-    );
-};
-
-// --- Transport Day Planner ---
-interface RouteStop {
-    id: string; // combination of orderNumber and type
-    type: 'Ophalen' | 'Bezorgen';
-    order: Order;
-    notes: string;
-}
-
-const TransportDayPlanner: React.FC<{ date: string; orders: Order[]; onBack: () => void; }> = ({ date, orders, onBack }) => {
-    const [stops, setStops] = useState<RouteStop[]>([]);
-    const [view, setView] = useState<'planning' | 'overview'>('planning');
-
-    useEffect(() => {
-        const isSameDay = (d1Str: string, d2Str: string) => new Date(d1Str).toISOString().split('T')[0] === new Date(d2Str).toISOString().split('T')[0];
-
-        const pickupsForDate = orders
-            .filter(o => o.status === 'Actief' && isSameDay(o.pickupDate, date))
-            .map(o => ({ id: `${o.orderNumber}-pickup`, type: 'Ophalen' as const, order: o, notes: '' }));
-    
-        const deliveriesForDate = orders
-            .filter(o => o.deliveryDate && isSameDay(o.deliveryDate, date))
-            .map(o => ({ id: `${o.orderNumber}-delivery`, type: 'Bezorgen' as const, order: o, notes: '' }));
-
-        setStops([...pickupsForDate, ...deliveriesForDate]);
-    }, [date, orders]);
-
-    const moveStop = (index: number, direction: 'up' | 'down') => {
-        const newStops = [...stops];
-        if (direction === 'up' && index > 0) {
-            [newStops[index - 1], newStops[index]] = [newStops[index], newStops[index - 1]];
-        }
-        if (direction === 'down' && index < stops.length - 1) {
-            [newStops[index + 1], newStops[index]] = [newStops[index], newStops[index + 1]];
-        }
-        setStops(newStops);
-    };
-    
-    const handleNoteChange = (index: number, newNote: string) => {
-        const newStops = [...stops];
-        newStops[index].notes = newNote;
-        setStops(newStops);
-    };
-
-    const loadingList = useMemo(() => stops
-      .filter(s => s.type === 'Bezorgen')
-      .flatMap(s => s.order.furniture.map(f => ({...f, customerName: s.order.customer.name})))
-    , [stops]);
-
-
-    if (view === 'overview') {
-        return (
-            <div>
-                <div className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-lg mb-6 flex justify-between items-center non-printable">
-                    <button onClick={() => setView('planning')} className="text-blue-600 dark:text-blue-400 hover:underline">&larr; Wijzig Planning</button>
-                    <button onClick={() => window.print()} className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md text-white bg-gray-600 hover:bg-gray-700">
-                        <PrintIcon className="w-5 h-5"/> Print Lijst
-                    </button>
-                </div>
-                <div id="printable-list" className="printable-content bg-white p-8 text-black">
-                     <h1 className="text-3xl font-bold mb-4">Daglijst Vervoer - {new Date(date).toLocaleDateString('nl-NL', { weekday: 'long', day: 'numeric', month: 'long' })}</h1>
-                
-                     <div className="mb-8 no-break">
-                         <h2 className="text-2xl font-bold mb-4 border-b pb-2">Laadlijst (Bezorgingen)</h2>
-                         {loadingList.length > 0 ? (
-                            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
-                                {loadingList.map(item => (
-                                    <div key={item.id} className="border rounded-lg p-2 text-center">
-                                        <img src={item.image} alt={item.type} className="w-full h-24 object-cover mb-2 rounded-md" />
-                                        <p className="font-semibold text-sm">{item.type}</p>
-                                        <p className="text-xs italic">Voor: {item.customerName}</p>
-                                    </div>
-                                ))}
-                            </div>
-                         ) : <p>Geen meubels om te laden voor bezorging vandaag.</p>}
-                     </div>
-
-                     <div className="page-break"></div>
-
-                     <h2 className="text-2xl font-bold mb-4 border-b pb-2">Route</h2>
-                      {stops.map((stop, index) => (
-                        <div key={stop.id} className="mb-6 pb-4 border-b last:border-b-0 no-break">
-                            <h3 className="text-xl font-bold mb-2">Stop {index + 1}: {stop.type}</h3>
-                            <div className="grid grid-cols-2 gap-4">
-                                <div>
-                                    <p><span className="font-semibold">Klant:</span> {stop.order.customer.name}</p>
-                                    <p><span className="font-semibold">Adres:</span> {stop.order.customer.address}</p>
-                                    <p><span className="font-semibold">Telefoon:</span> {stop.order.customer.phone}</p>
-                                </div>
-                                <div>
-                                    {stop.type === 'Bezorgen' && (
-                                        <div className="p-2 bg-yellow-100 border border-yellow-300 font-bold text-lg text-yellow-900">
-                                            Te innen: €{(stop.order.furniture.reduce((sum, item) => sum + item.price, 0) + stop.order.deliveryCost).toFixed(2)}
-                                        </div>
-                                    )}
-                                </div>
-                            </div>
-                            <div className="mt-2">
-                                <p className="font-semibold">Betreft meubels:</p>
-                                <ul className="list-disc list-inside ml-4">
-                                    {stop.order.furniture.map(item => <li key={item.id}>{item.type}</li>)}
-                                </ul>
-                            </div>
-                            {stop.notes && (
-                                <div className="mt-2 p-2 bg-gray-100 border">
-                                    <p className="font-semibold">Notities:</p>
-                                    <p className="whitespace-pre-wrap">{stop.notes}</p>
-                                </div>
-                            )}
-                        </div>
-                    ))}
-                </div>
-            </div>
-        )
-    }
-
-    return (
-        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg">
-            <div className="flex justify-between items-center mb-6">
-               <div>
-                   <button onClick={onBack} className="text-blue-600 dark:text-blue-400 hover:underline mb-2">&larr; Terug naar overzicht</button>
-                   <h2 className="text-2xl font-bold">Planning voor {new Date(date).toLocaleDateString('nl-NL', { weekday: 'long', day: 'numeric', month: 'long' })}</h2>
-               </div>
-               <button onClick={() => setView('overview')} className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700">
-                   Keur planning goed & Bekijk Overzicht &rarr;
-               </button>
-            </div>
-            
-            <div className="space-y-4">
-                {stops.map((stop, index) => (
-                    <div key={stop.id} className="flex items-start gap-4 p-4 border rounded-md bg-gray-50 dark:bg-gray-700">
-                        <div className="flex flex-col items-center">
-                            <button onClick={() => moveStop(index, 'up')} disabled={index === 0} className="disabled:opacity-20 text-gray-500 hover:text-black dark:hover:text-white">▲</button>
-                            <span className="font-bold text-lg">{index + 1}</span>
-                            <button onClick={() => moveStop(index, 'down')} disabled={index === stops.length - 1} className="disabled:opacity-20 text-gray-500 hover:text-black dark:hover:text-white">▼</button>
-                        </div>
-                        <div className="flex-grow">
-                            <span className={`px-2 py-1 text-xs font-semibold rounded-full ${stop.type === 'Ophalen' ? 'bg-purple-200 text-purple-800' : 'bg-green-200 text-green-800'}`}>
-                                {stop.type}
-                            </span>
-                            <p className="font-bold text-lg mt-1">{stop.order.customer.name}</p>
-                            <p className="text-gray-600 dark:text-gray-300">{stop.order.customer.address}</p>
-                            <div className="mt-2">
-                                <h4 className="font-semibold text-sm">Meubels:</h4>
-                                <ul className="list-disc list-inside text-sm">
-                                    {stop.order.furniture.map(item => <li key={item.id}>{item.type}</li>)}
-                                </ul>
-                            </div>
-                            {stop.type === 'Bezorgen' && (
-                                <div className="mt-2 p-2 bg-yellow-100 dark:bg-yellow-900 rounded-md border border-yellow-300">
-                                    <p className="font-bold text-yellow-800 dark:text-yellow-200">
-                                        Af te rekenen: €{(stop.order.furniture.reduce((sum, item) => sum + item.price, 0) + stop.order.deliveryCost).toFixed(2)}
-                                    </p>
-                                </div>
-                            )}
-                            <div className="mt-2">
-                                <label className="block text-sm font-medium">Notities voor bezorger:</label>
-                                <textarea 
-                                    value={stop.notes}
-                                    onChange={(e) => handleNoteChange(index, e.target.value)}
-                                    rows={2}
-                                    className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-800"
-                                    placeholder="Bijv. bellen bij aankomst, code portiek is 1234..."
-                                />
-                            </div>
-                        </div>
-                    </div>
-                ))}
-            </div>
-        </div>
-    );
-};
-
-
-// --- Invoice List ---
-const InvoiceList: React.FC<{ orders: Order[], updateOrder: (order: Order) => void }> = ({ orders, updateOrder }) => {
-    const [selectedOrderForInvoice, setSelectedOrderForInvoice] = useState<Order | null>(null);
-
-    if (selectedOrderForInvoice) {
-        return <Invoice order={selectedOrderForInvoice} onBack={() => setSelectedOrderForInvoice(null)} updateOrder={updateOrder} />;
-    }
-
-    return (
-        <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg">
-            <h2 className="text-2xl font-bold mb-4">Facturen Klaar voor Verzending</h2>
-            <p className="mb-6 text-gray-600 dark:text-gray-400">Deze opdrachten zijn volledig afgerond en klaar voor bezorging.</p>
-            <ul className="space-y-3">
-                {orders.map(order => (
-                    <li key={order.orderNumber} onClick={() => setSelectedOrderForInvoice(order)}
-                        className="p-4 border rounded-md flex justify-between items-center cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-700">
-                        <div>
-                            <p className="font-semibold">#{order.orderNumber} - {order.customer.name}</p>
-                            <p className="text-sm text-gray-500">{order.title}</p>
-                        </div>
-                        <span className="text-blue-600 dark:text-blue-400 font-semibold">Bekijk Factuur &rarr;</span>
-                    </li>
-                ))}
-                {orders.length === 0 && <p>Geen facturen beschikbaar.</p>}
-            </ul>
-        </div>
-    );
-};
-
-
-// --- Invoice Component ---
-const Invoice: React.FC<{ order: Order, onBack: () => void, updateOrder: (order: Order) => void }> = ({ order, onBack, updateOrder }) => {
-    const invoiceRef = React.useRef<HTMLDivElement>(null);
-    const subtotal = order.furniture.reduce((acc, item) => acc + item.price, 0);
-    const total = subtotal + order.deliveryCost;
-
-    const downloadPdf = async () => {
-        const { jsPDF } = jspdf;
-        if (!invoiceRef.current) return;
-        const canvas = await html2canvas(invoiceRef.current);
-        const imgData = canvas.toDataURL('image/png');
-        const pdf = new jsPDF('p', 'mm', 'a4');
-        const pdfWidth = pdf.internal.pageSize.getWidth();
-        const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
-        pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
-        pdf.save(`factuur-${order.orderNumber}.pdf`);
-        updateOrder({...order, status: 'Voltooid' });
-    };
-    
-    const printInvoice = () => {
-        window.print();
-        setTimeout(() => {
-           updateOrder({...order, status: 'Voltooid' });
-        }, 1000); 
-    }
-
-    return (
-        <div>
-            <div className="flex items-center gap-4 mb-4 non-printable">
-                <button onClick={onBack} className="text-blue-600 dark:text-blue-400 hover:underline">&larr; Terug naar lijst</button>
-                 <button onClick={downloadPdf} className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md text-white bg-green-600 hover:bg-green-700">
-                    <DownloadIcon className="w-5 h-5"/> Download als PDF
-                </button>
-                <button onClick={printInvoice} className="flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-md text-white bg-gray-600 hover:bg-gray-700">
-                    <PrintIcon className="w-5 h-5"/> Print Factuur
-                </button>
-            </div>
-            <div id="invoice-printable" ref={invoiceRef} className="printable-content p-12 bg-white text-black mx-auto border shadow-lg" style={{width: '210mm', minHeight: '297mm'}}>
-                <header className="flex justify-between items-start pb-6 border-b">
-                    <div>
-                        <h1 className="text-3xl font-bold text-gray-800">{COMPANY_INFO.name}</h1>
-                        <p>{COMPANY_INFO.address}</p>
-                    </div>
-                    <h2 className="text-4xl font-light text-gray-600">FACTUUR</h2>
-                </header>
-                <section className="flex justify-between my-8">
-                    <div>
-                        <h3 className="font-semibold mb-2">Factuur aan:</h3>
-                        <p className="font-bold">{order.customer.name}</p>
-                        <p>{order.customer.address}</p>
-                        <p>{order.customer.phone}</p>
-                        <p>{order.customer.email}</p>
-                    </div>
-                    <div className="text-right">
-                        <p><span className="font-semibold">Factuurnummer:</span> {order.orderNumber}</p>
-                        <p><span className="font-semibold">Factuurdatum:</span> {new Date().toLocaleDateString('nl-NL')}</p>
-                        <p><span className="font-semibold">Ophaaldatum:</span> {new Date(order.pickupDate).toLocaleDateString('nl-NL')}</p>
-                    </div>
-                </section>
-                <section>
-                    <table className="w-full text-left">
-                        <thead className="bg-gray-100">
-                            <tr>
-                                <th className="p-3 font-semibold">Omschrijving</th>
-                                <th className="p-3 font-semibold text-right">Prijs</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {order.furniture.map(item => (
-                                <tr key={item.id} className="border-b">
-                                    <td className="p-3">
-                                        <p className="font-medium">{item.type}</p>
-                                        <p className="text-sm text-gray-600">{item.treatment}</p>
-                                    </td>
-                                    <td className="p-3 text-right">€{item.price.toFixed(2)}</td>
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </section>
-                <section className="flex justify-end mt-8">
-                    <div className="w-full md:w-1/3">
-                        <div className="flex justify-between">
-                            <span>Subtotaal:</span>
-                            <span>€{subtotal.toFixed(2)}</span>
-                        </div>
-                         <div className="flex justify-between">
-                            <span>Bezorgkosten:</span>
-                            <span>€{order.deliveryCost.toFixed(2)}</span>
-                        </div>
-                        <div className="flex justify-between font-bold text-xl mt-4 border-t pt-2">
-                            <span>Totaal:</span>
-                            <span>€{total.toFixed(2)}</span>
-                        </div>
-                    </div>
-                </section>
-                <footer className="mt-16 border-t pt-6 text-sm text-gray-600 text-center">
-                    <p>Bedankt voor uw opdracht!</p>
-                    <p>Graag het totaalbedrag overmaken op {COMPANY_INFO.iban} t.n.v. {COMPANY_INFO.name} o.v.v. factuurnummer {order.orderNumber}</p>
-                    <p className="mt-2 text-xs">{COMPANY_INFO.name} | KVK: {COMPANY_INFO.kvk} | BTW: {COMPANY_INFO.btw}</p>
-                </footer>
-            </div>
-        </div>
-    );
-};
-
-// --- Schedule Delivery Modal ---
-interface ScheduleDeliveryModalProps {
-    order: Order;
-    onClose: () => void;
-    onSchedule: (order: Order, date: string, time: string) => void;
-}
-const ScheduleDeliveryModal: React.FC<ScheduleDeliveryModalProps> = ({ order, onClose, onSchedule }) => {
-    const [date, setDate] = useState('');
-    const [time, setTime] = useState('');
-
-    const handleSubmit = (e: React.FormEvent) => {
-        e.preventDefault();
-        if (date && time) {
-            onSchedule(order, date, time);
-        }
-    };
-
-    return (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50 non-printable">
-            <div className="bg-white dark:bg-gray-800 p-8 rounded-lg shadow-2xl w-full max-w-md">
-                <h2 className="text-2xl font-bold mb-4">Bezorging Inplannen</h2>
-                <p className="mb-6">Alle meubels voor opdracht <strong>#{order.orderNumber} ({order.customer.name})</strong> zijn klaar. Plan nu de bezorging in.</p>
-                <form onSubmit={handleSubmit}>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
-                        <div>
-                            <label htmlFor="deliveryDate" className="block text-sm font-medium">Bezorgdatum</label>
-                            <input type="date" id="deliveryDate" value={date} onChange={e => setDate(e.target.value)} required className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700"/>
-                        </div>
-                        <div>
-                            <label htmlFor="deliveryTime" className="block text-sm font-medium">Bezorgtijd</label>
-                            <input type="time" id="deliveryTime" value={time} onChange={e => setTime(e.target.value)} required className="mt-1 block w-full rounded-md border-gray-300 dark:border-gray-600 shadow-sm bg-white dark:bg-gray-700"/>
-                        </div>
-                    </div>
-                    <div className="flex justify-end gap-4">
-                        <button type="button" onClick={onClose} className="px-4 py-2 text-sm font-medium rounded-md border border-gray-300 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-700">Annuleren</button>
-                        <button type="submit" className="px-4 py-2 text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 flex items-center gap-2">
-                            <CalendarIcon className="w-5 h-5"/> Inplannen in Agenda
-                        </button>
-                    </div>
-                </form>
-            </div>
-        </div>
-    );
-};
