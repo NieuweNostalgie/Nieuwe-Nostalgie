@@ -11,6 +11,25 @@ export enum UserStatus {
     Inactive = "Inactive",
 }
 
+export interface Organization {
+    id: string;
+    name: string;
+    address?: string | null;
+    email?: string | null;
+    phone?: string | null;
+    logo?: string | null;
+    createdAt?: string;
+}
+
+export interface Supervisor {
+    id: string;
+    name: string;
+    organizationId: string; // Link naar Organization
+    email?: string | null;
+    phone?: string | null;
+    createdAt?: string;
+}
+
 export interface UserProfile {
     uid: string;
     email: string;
@@ -20,6 +39,7 @@ export interface UserProfile {
     role: UserRole;
     status: UserStatus;
     department?: Department;
+    supervisorId?: string | null; // Link naar Supervisor
     createdAt?: string;
 }
 
